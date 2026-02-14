@@ -187,9 +187,10 @@ bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutp
                         impactParameter = -1.;
                     }
 
-                    processEvent(arrays, out, impactParameter, evNum, nPart);
-
-                    tree->Fill();
+                    if (!isElastic) {
+                        processEvent(arrays, out, impactParameter, evNum, nPart);
+                        tree->Fill();
+                    }
 
                     // clear
                     interaction.clear();

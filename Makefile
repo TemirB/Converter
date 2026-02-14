@@ -5,6 +5,7 @@ ROOT_DIR = /home/tahea/root_install
 
 # Путь к библиотекам McDst
 MCDST_DIR = /home/tahea/external/McDst/build
+MCDST_LIB = /home/tahea/external/McDst/include
 
 # Компилятор
 CXX = g++
@@ -13,7 +14,7 @@ CXX = g++
 CXXFLAGS = $(shell root-config --cflags) -fPIC -Wall -std=c++17
 CXXFLAGS += -I$(MCDST_DIR) -I$(ROOT_DIR)/include -Iinclude
 LIBS = $(shell root-config --glibs) -L$(ROOT_DIR)/lib -lCore -lRIO -lTree -lHist -lGraf -lGpad -lPhysics -lThread -lm
-LIBS += -L$(MCDST_DIR) -lMcDst
+LIBS += -L$(MCDST_LIB) -lMcDst
 
 # Имя исполняемого файла
 TARGET = converter
