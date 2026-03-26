@@ -24,21 +24,25 @@ int kInitNucl = 394;
 // Хелпер для записи события
 void processEvent(
     TClonesArray* arrays[McArrays::NAllMcArrays],
-    std::unordered_map<int, Particle> out,
+    const std::unordered_map<int, Particle>& out,
     double impactParameter, int evNum, int nPart
 ) {
     // [Future] Можно из interaction поддерживать сбор child
     int child[2] = {-1, 1};
     int idx = 0;
 
+    // пред запрос
+    auto* particleArray = arrays[McArrays::Particle];
+
     for (const auto & entry : out) {
+        int entryIdx = particleArray->GetEntries();
         const Particle& part = entry.second;
         // Use placement new: TClonesArray pre-allocates memory,
         // and we construct McParticle directly in the next free slot.
         // arrays[...]->GetEntries() gives the index of that slot,
         // and operator[] returns a void* to the raw memory location.
         
-        new((*(arrays[McArrays::Particle]))[arrays[McArrays::Particle]->GetEntries()]) McParticle(
+        new((*particleArray)[entryIdx]) McParticle(
             idx++, part.pdg, 0, 0, 0, -1, 0, child,
             part.px, part.py, part.pz, part.p0,
             part.x, part.y, part.z, part.t
@@ -116,6 +120,9 @@ bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutp
     //         отчистка происходит в момент завершения всего события
     std::unordered_map<int, Particle> interactions;
     std::unordered_map<int, Particle> out;
+    // Резервируем память, оценочное значение.
+    interactions.reserve(15000);
+    out.reserve(15000);
 
     // Основной принцип работы программы
     // - mode = содержит в себе текущий режим работы программы,
@@ -135,57 +142,70 @@ bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutp
     Mode mode = Mode::Init;
     
     std::string line;
+    line.reserve(256);
 
     while (std::getline(input, line)) {
         if (line.empty()) continue;
 
-        std::istringstream iss(line);
+        // std::istringstream iss(line);
 
         // Разбираем по словам комментарий:
-        // # ...
         if (line[0] == '#') {
-            std::string interaction, dummy, keyWord;
+            char word1[32], word2[32];
+            // std::string interaction, dummy, keyWord;
 
-            // Поиск первых слов:
-            iss >> dummy >> dummy;
+            if (sscanf(line.c_str(), "# %31s %31s", word1, word2) < 2) {
+                continue; // Не хватает слов, пропускаем
+            }
             //       #      event
             //       #   interaction
-            if (dummy == "interaction") {
+            // if (dummy == "interaction") {
+            if (strcmp(word1, "interaction") == 0) {
                 // Поиск кол-ва частиц в взаимодействии
                 // [Future] можно будет поддерживать child, etc
                 // iss >> dummy >> iIn >> dummy >> iOut;
                 //      in       2      out      2  ... (rho    0.0000000 weight     39.71011 partial   39.7101111 type     1)
                 mode = Mode::Interaction;
-            } else if (dummy == "event") {
+            // } else if (dummy == "event") {
+            } else if (strcmp(word1, "event") == 0) {
+                char keyword[4];
                 // Поиск ключевых слов
-                iss >> evNum >> keyWord >> nPart;
+                if (sscanf(line.c_str(), "# event %d %3s %d", &evNum, keyword, &nPart) != 3) {
+                    mode = Mode::SkipEvent;
+                    continue;
+                }
+                // iss >> evNum >> keyWord >> nPart;
                 //       0        in        394
                 //       0        out       421
                 //       0        end        0
-                if (keyWord == "in") {
+                // if (keyWord == "in") {
+                if (strcmp(keyword, "in") == 0) {
                     mode = Mode::InEvent;
                     // [OUTDATED] Не нужный режим работы
-                } else if (keyWord == "out") {
-                    mode = Mode::OutEvent;
-
-                    if (nPart == kInitNucl) {
-                        mode = Mode::SkipEvent;
-                        isElastic = true;
-                    }
-                } else if (keyWord == "end") {
+                // } else if (keyWord == "out") {
+                } else if (strcmp(keyword, "out") == 0) {
+                    mode = (nPart == kInitNucl) ? Mode::SkipEvent : Mode::OutEvent;
+                    isElastic = (mode == Mode::SkipEvent);
+                // } else if (keyWord == "end") {
+                } else if (strcmp(keyword, "end") == 0) {
                     mode = Mode::EndEvent;
-
                     double impactParameter = -1.;
+                    char yesno[4];
 
-                    iss >> dummy >> impactParameter >>             dummy       >> dummy; 
+                    if (sscanf(line.c_str(), "# event %*d end %*d impact %lf scattering_projectile_target %3s", &impactParameter, yesno) == 2) {
+                        if (isElastic && strcmp(yesno, "no") == 0) {
+                            impactParameter = -1.;
+                        }
+                    }
+                    // iss >> dummy >> impactParameter >>             dummy       >> dummy; 
                     //    impact        11.095         scattering_projectile_target yes
 
                     // scattering_projectile_target - показывает упругость события,
                     // yes - событие было, новые частицы родились
                     // no - небыло новых частиц кроме начальных = упругое событие
-                    if (isElastic && dummy == "no") {
-                        impactParameter = -1.;
-                    }
+                    // if (isElastic && dummy == "no") {
+                    //     impactParameter = -1.;
+                    // }
 
                     if (!isElastic) {
                         processEvent(arrays, out, impactParameter, evNum, nPart);
@@ -193,7 +213,7 @@ bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutp
                     }
 
                     // clear
-                    interaction.clear();
+                    interactions.clear();
                     out.clear();
                     for (unsigned int i = 0; i < McArrays::NAllMcArrays; i++) arrays[i]->Clear();
                     isElastic = false;
@@ -209,10 +229,13 @@ bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutp
         if (mode == Mode::SkipEvent) continue;
 
         // Тут и до конца цикла происходит только запись частиц в буферы
-        Particle p = Particle();
-        iss >> p.t >> p.x >> p.y >> p.z
-            >> p.mass >> p.p0 >> p.px >> p.py >> p.pz
-            >> p.pdg >> p.ID >> p.charge;
+        Particle p;
+        if (sscanf(line.c_str(), "%lf %lf %lf %lf %lf %lf %lf %lf %lf %d %d %d",
+                   &p.t, &p.x, &p.y, &p.z, 
+                   &p.mass, &p.p0, &p.px, &p.py, &p.pz,
+                   &p.pdg, &p.ID, &p.charge) != 12) {
+            continue;  // Пропускаем битые строки
+        }
 
         switch (mode) {
             case Mode::Interaction:
@@ -225,9 +248,9 @@ bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutp
                 // }
                 // Также в любом случае записываем её в буфер interation,
                 // Поддерживая уникальность по ID
-                interactions[p.ID] = p;
-
+                interactions.try_emplace(p.ID, p);
                 break;
+
             case Mode::OutEvent:
                 // Пропускаем частицы упругого события,
                 // так как оно не имеет для нас физического смысла
@@ -237,14 +260,18 @@ bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutp
                 // не появилась во взаимодействиях И является начальной - это спектатор 
                 if (interactions.find(p.ID) == interactions.end() && p.ID < kInitNucl) {
                     p.SetSpectator();
-                    out[p.ID] = p;
-                    continue;
+                    out.try_emplace(p.ID, p);
+                } else if (auto it = interactions.find(p.ID); it != interactions.end()) {
+                    auto& stored = out.try_emplace(p.ID, it->second).first->second;
+                    stored.t = p.t; stored.x = p.x; stored.y = p.y; stored.z = p.z;
+                    stored.mass = p.mass, stored.p0 = p.p0; stored.px = p.px; stored.py = p.py; stored.pz = p.pz;
+                    stored.pdg = p.pdg, stored.ID = p.ID, stored.charge = p.charge;
                 }
-
+                
                 // Если частица не является начальной и при этом дожила до момента 200 fm/c, 
                 // то это означает, что она была ранее записана в interactions
                 // Тогда мы просто обновляем её координаты на freezout
-                out[p.ID] = interactions[p.ID];
+                // out[p.ID] = interactions[p.ID];
                 
                 break;
             default:
@@ -267,148 +294,148 @@ bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutp
 }
 
 
-// [OUTDATED]
-bool oldConvert(const std::string& inputFilename, const std::string& outputFilename) {
-    TFile* outputFile = TFile::Open(outputFilename.c_str(), "RECREATE", "Oscar to McDst");
-    if (!outputFile || outputFile->IsZombie()) {
-        std::cerr << "Cannot create output file: " << outputFilename << std::endl;
-        return false;
-    }
-    outputFile->SetCompressionLevel(1);
+// // [OUTDATED]
+// bool oldConvert(const std::string& inputFilename, const std::string& outputFilename) {
+//     TFile* outputFile = TFile::Open(outputFilename.c_str(), "RECREATE", "Oscar to McDst");
+//     if (!outputFile || outputFile->IsZombie()) {
+//         std::cerr << "Cannot create output file: " << outputFilename << std::endl;
+//         return false;
+//     }
+//     outputFile->SetCompressionLevel(1);
 
-    TTree* tree = new TTree("McDst", "Converted Oscar Data");
-    TClonesArray* arrays[McArrays::NAllMcArrays];
+//     TTree* tree = new TTree("McDst", "Converted Oscar Data");
+//     TClonesArray* arrays[McArrays::NAllMcArrays];
 
-    for (unsigned int i = 0; i < McArrays::NAllMcArrays; i++) {
-        arrays[i] = new TClonesArray(McArrays::mcArrayTypes[i], McArrays::mcArraySizes[i]);
-        arrays[i]->SetOwner(kFALSE);
-        auto br = tree->Branch(McArrays::mcArrayNames[i], &arrays[i], 65536, 99);
-        if (br) br->SetAutoDelete(kFALSE);
-    }
+//     for (unsigned int i = 0; i < McArrays::NAllMcArrays; i++) {
+//         arrays[i] = new TClonesArray(McArrays::mcArrayTypes[i], McArrays::mcArraySizes[i]);
+//         arrays[i]->SetOwner(kFALSE);
+//         auto br = tree->Branch(McArrays::mcArrayNames[i], &arrays[i], 65536, 99);
+//         if (br) br->SetAutoDelete(kFALSE);
+//     }
 
-    std::ifstream infile(inputFilename);
-    if (!infile.is_open()) {
-        std::cerr << "Cannot open input file: " << inputFilename << std::endl;
-        return false;
-    }
+//     std::ifstream infile(inputFilename);
+//     if (!infile.is_open()) {
+//         std::cerr << "Cannot open input file: " << inputFilename << std::endl;
+//         return false;
+//     }
 
-    bool isElastic = false;
-    int ev_num = -1;
-    double n_part = -1;
-    Mode mode = Mode::Init;
-    int startParticlesNum = 394;
+//     bool isElastic = false;
+//     int ev_num = -1;
+//     double n_part = -1;
+//     Mode mode = Mode::Init;
+//     int startParticlesNum = 394;
 
-    double timpactParameter = -1.;
+//     double timpactParameter = -1.;
 
-    std::unordered_map<int, Particle> buffer;
-    std::unordered_map<int, Particle> endBuffer;
-    std::unordered_map<int, Particle> eventBuffer;
+//     std::unordered_map<int, Particle> buffer;
+//     std::unordered_map<int, Particle> endBuffer;
+//     std::unordered_map<int, Particle> eventBuffer;
 
-    std::string line;
-    while (std::getline(infile, line)) {
-        if (line.empty()) continue;
+//     std::string line;
+//     while (std::getline(infile, line)) {
+//         if (line.empty()) continue;
 
-        std::istringstream iss(line);
+//         std::istringstream iss(line);
 
-        if (line[0] == '#') {
-            std::string interaction, dummy, keyWord;
-            iss >> dummy >> dummy >> ev_num >> keyWord >> n_part;
-            //       #      event       0       in          394
-            if (dummy == "interaction") {
-                mode = Mode::Interaction;
-                continue;
-            } else if (dummy == "event") {
-                if (keyWord == "in") {
-                    mode = Mode::InEvent;
-                    isElastic = false;
+//         if (line[0] == '#') {
+//             std::string interaction, dummy, keyWord;
+//             iss >> dummy >> dummy >> ev_num >> keyWord >> n_part;
+//             //       #      event       0       in          394
+//             if (dummy == "interaction") {
+//                 mode = Mode::Interaction;
+//                 continue;
+//             } else if (dummy == "event") {
+//                 if (keyWord == "in") {
+//                     mode = Mode::InEvent;
+//                     isElastic = false;
 
-                    buffer.clear();
-                    endBuffer.clear();
-                    eventBuffer.clear();
-                    for (unsigned int i = 0; i < McArrays::NAllMcArrays; i++) arrays[i]->Clear();
-                    continue;
-                } else if (keyWord == "out") {
-                    mode = (int(n_part) == startParticlesNum) ? Mode::SkipEvent : Mode::OutEvent;
-                    isElastic = (mode == Mode::SkipEvent);
-                    continue;
-                } else if (keyWord == "end") {
-                    mode = Mode::EndEvent;
-                    timpactParameter = n_part;
-                    if (isElastic) {
-                        timpactParameter = -1.;
-                        continue;
-                    }
-                } else {
-                    mode = Mode::SkipEvent;
-                    continue;
-                }
-            }
-        }
+//                     buffer.clear();
+//                     endBuffer.clear();
+//                     eventBuffer.clear();
+//                     for (unsigned int i = 0; i < McArrays::NAllMcArrays; i++) arrays[i]->Clear();
+//                     continue;
+//                 } else if (keyWord == "out") {
+//                     mode = (int(n_part) == startParticlesNum) ? Mode::SkipEvent : Mode::OutEvent;
+//                     isElastic = (mode == Mode::SkipEvent);
+//                     continue;
+//                 } else if (keyWord == "end") {
+//                     mode = Mode::EndEvent;
+//                     timpactParameter = n_part;
+//                     if (isElastic) {
+//                         timpactParameter = -1.;
+//                         continue;
+//                     }
+//                 } else {
+//                     mode = Mode::SkipEvent;
+//                     continue;
+//                 }
+//             }
+//         }
 
-        if (mode == Mode::SkipEvent) continue;
+//         if (mode == Mode::SkipEvent) continue;
 
-        double t, x, y, z, mass, p0, px, py, pz;
-        int pdg, ID, charge;
-        iss >> t >> x >> y >> z >> mass >> p0 >> px >> py >> pz >> pdg >> ID >> charge;
-        Particle p(t, x, y, z, mass, p0, px, py, pz, pdg, ID, charge);
+//         double t, x, y, z, mass, p0, px, py, pz;
+//         int pdg, ID, charge;
+//         iss >> t >> x >> y >> z >> mass >> p0 >> px >> py >> pz >> pdg >> ID >> charge;
+//         Particle p(t, x, y, z, mass, p0, px, py, pz, pdg, ID, charge);
 
-        if (mode == Mode::Interaction || mode == Mode::InEvent) {
-            if (ID < 394) p.participant = true;
-            buffer[ID] = p;
-        } else if (mode == Mode::OutEvent) {
-            if (isElastic) continue;
-            endBuffer[ID] = p;
-        } else if (mode == Mode::EndEvent) {
-            for (const auto& entry : buffer) {
-                int id = entry.first;
-                const Particle& initParticle = entry.second;
+//         if (mode == Mode::Interaction || mode == Mode::InEvent) {
+//             if (ID < 394) p.participant = true;
+//             buffer[ID] = p;
+//         } else if (mode == Mode::OutEvent) {
+//             if (isElastic) continue;
+//             endBuffer[ID] = p;
+//         } else if (mode == Mode::EndEvent) {
+//             for (const auto& entry : buffer) {
+//                 int id = entry.first;
+//                 const Particle& initParticle = entry.second;
 
-                if (endBuffer.find(id) == endBuffer.end()) continue;
+//                 if (endBuffer.find(id) == endBuffer.end()) continue;
 
-                if (!initParticle.participant && initParticle.ID < 394) {
-                    Particle specParticle = initParticle;
-                    specParticle.SetSpectator();
-                    eventBuffer[id] = specParticle;
-                } else {
-                    eventBuffer[id] = initParticle;
-                }
-            }
+//                 if (!initParticle.participant && initParticle.ID < 394) {
+//                     Particle specParticle = initParticle;
+//                     specParticle.SetSpectator();
+//                     eventBuffer[id] = specParticle;
+//                 } else {
+//                     eventBuffer[id] = initParticle;
+//                 }
+//             }
 
-            int child[2] = {-1, -1};
-            int idx = 0;
-            for (const auto& entry : eventBuffer) {
-                const Particle& p1 = entry.second;
-                new((*(arrays[McArrays::Particle]))[arrays[McArrays::Particle]->GetEntries()])
-                McParticle(idx++, p1.pdg, 0, 0, 0, -1, 0, child,
-                          p1.px, p1.py, p1.pz, p1.p0,
-                          p1.x, p1.y, p1.z, p1.t);
-            }
+//             int child[2] = {-1, -1};
+//             int idx = 0;
+//             for (const auto& entry : eventBuffer) {
+//                 const Particle& p1 = entry.second;
+//                 new((*(arrays[McArrays::Particle]))[arrays[McArrays::Particle]->GetEntries()])
+//                 McParticle(idx++, p1.pdg, 0, 0, 0, -1, 0, child,
+//                           p1.px, p1.py, p1.pz, p1.p0,
+//                           p1.x, p1.y, p1.z, p1.t);
+//             }
 
-            McEvent* event = new((*(arrays[McArrays::Event]))[arrays[McArrays::Event]->GetEntries()]) McEvent();
-            event->setEventNr(ev_num);
-            event->setB(timpactParameter);
-            event->setPhi(0.);
-            event->setNes(1);
-            event->setComment("");
-            event->setStepNr(1);
-            event->setStepT(200.);
+//             McEvent* event = new((*(arrays[McArrays::Event]))[arrays[McArrays::Event]->GetEntries()]) McEvent();
+//             event->setEventNr(ev_num);
+//             event->setB(timpactParameter);
+//             event->setPhi(0.);
+//             event->setNes(1);
+//             event->setComment("");
+//             event->setStepNr(1);
+//             event->setStepT(200.);
 
-            tree->Fill();
-            buffer.clear();
-            endBuffer.clear();
-            eventBuffer.clear();
-        }
-    }
+//             tree->Fill();
+//             buffer.clear();
+//             endBuffer.clear();
+//             eventBuffer.clear();
+//         }
+//     }
 
-    McRun run("SMASH", "Converted from Oscar file",
-              0, 0, 0., 0, 0, 0.,
-              0., 0., -1, 0, 0, 0., tree->GetEntries());
-    run.Write();
+//     McRun run("SMASH", "Converted from Oscar file",
+//               0, 0, 0., 0, 0, 0.,
+//               0., 0., -1, 0, 0, 0., tree->GetEntries());
+//     run.Write();
 
-    std::cout << "Conversion completed. Total events: " << tree->GetEntries() << std::endl;
+//     std::cout << "Conversion completed. Total events: " << tree->GetEntries() << std::endl;
 
-    outputFile->Write();
-    outputFile->Close();
+//     outputFile->Write();
+//     outputFile->Close();
 
-    return true;
-}
+//     return true;
+// }
