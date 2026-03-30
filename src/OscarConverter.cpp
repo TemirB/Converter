@@ -228,52 +228,35 @@ bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutp
 
         if (mode == Mode::SkipEvent) continue;
 
-        // Тут и до конца цикла происходит только запись частиц в буферы
         Particle p;
         if (sscanf(line.c_str(), "%lf %lf %lf %lf %lf %lf %lf %lf %lf %d %d %d",
                    &p.t, &p.x, &p.y, &p.z, 
                    &p.mass, &p.p0, &p.px, &p.py, &p.pz,
                    &p.pdg, &p.ID, &p.charge) != 12) {
-            continue;  // Пропускаем битые строки
+            continue;
         }
 
         switch (mode) {
             case Mode::Interaction:
-                // Если частица встретилась в interation, а также явлется начальной
-                // Проставляем ей флаг учаcтника взаимодействия,
-                // что далее позволит отделить её от спектаторов
-                // [OUTDATED] поле не нужно поскольку, логику можно упростить, см. блок OutEvent
-                // if (p.ID < kInitNucl) {
-                //     p.participant = true;
-                // }
-                // Также в любом случае записываем её в буфер interation,
-                // Поддерживая уникальность по ID
                 interactions.try_emplace(p.ID, p);
                 break;
 
-            case Mode::OutEvent:
-                // Пропускаем частицы упругого события,
-                // так как оно не имеет для нас физического смысла
+            case Mode::OutEvent: {
                 if (isElastic) continue;
 
-                // Если частица 
-                // не появилась во взаимодействиях И является начальной - это спектатор 
-                if (interactions.find(p.ID) == interactions.end() && p.ID < kInitNucl) {
-                    p.SetSpectator();
-                    out.try_emplace(p.ID, p);
-                } else if (auto it = interactions.find(p.ID); it != interactions.end()) {
-                    auto& stored = out.try_emplace(p.ID, it->second).first->second;
-                    stored.t = p.t; stored.x = p.x; stored.y = p.y; stored.z = p.z;
-                    stored.mass = p.mass, stored.p0 = p.p0; stored.px = p.px; stored.py = p.py; stored.pz = p.pz;
-                    stored.pdg = p.pdg, stored.ID = p.ID, stored.charge = p.charge;
-                }
+                auto it = interactions.find(p.ID);
+                bool has_interaction = (it != interactions.end());
                 
-                // Если частица не является начальной и при этом дожила до момента 200 fm/c, 
-                // то это означает, что она была ранее записана в interactions
-                // Тогда мы просто обновляем её координаты на freezout
-                // out[p.ID] = interactions[p.ID];
+                if (p.ID < kInitNucl && !has_interaction) {
+                    p.SetSpectator();
+                } else if (has_interaction) {
+                    p = it->second;
+                }
+                out.try_emplace(p.ID, std::move(p));
                 
                 break;
+            }
+
             default:
                 break;
         }
