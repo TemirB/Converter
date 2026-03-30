@@ -1,6 +1,10 @@
 .vscode
 build
+build_profile
 
 converter
+converter_profile
 *.root
 *.oscar
+*.txt
+*.out
