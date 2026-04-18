@@ -193,7 +193,7 @@ bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutp
                     }
 
                     // clear
-                    interaction.clear();
+                    interactions.clear();
                     out.clear();
                     for (unsigned int i = 0; i < McArrays::NAllMcArrays; i++) arrays[i]->Clear();
                     isElastic = false;
