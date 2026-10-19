@@ -1,94 +1,73 @@
-#!/bin/bash
-# nohup sh generate_and_convert.sh 16 125 = 10M events
+#!/usr/bin/env bash
+# Example: ./generate_and_convert.sh 16 125 job
+set -u
 
-export MC_DST=/home/tahea/McDst
-export ROOTSYS=/home/tahea/root_install
-export PATH=$ROOTSYS/bin:$PATH
-export LD_LIBRARY_PATH=$ROOTSYS/lib:$MC_DST:$LD_LIBRARY_PATH
-source $ROOTSYS/bin/thisroot.sh
+if [[ $# -lt 2 || $# -gt 3 || ! $1 =~ ^[1-9][0-9]*$ || ! $2 =~ ^[1-9][0-9]*$ ]]; then
+    echo "Usage: $0 <tasks> <runs> [job_name]" >&2
+    exit 1
+fi
+N_TASKS=$1
+N_RUNS=$2
+JOB_NAME=${3:-job}
+if [[ ! $JOB_NAME =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    echo "Job name may contain only letters, numbers, underscores, dots and dashes." >&2
+    exit 1
+fi
 
-# ========== Пути ==========
-STORAGE="/home/tahea/smash_CF_builder/smash_CF_builder/Converter"
-OSCAR_READER_DIR="/home/tahea/smash_CF_builder/smash_CF_builder/Converter"    
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+CONVERTER_DIR=${CONVERTER_DIR:-$SCRIPT_DIR}
+SMASH_BUILD_DIR=${SMASH_BUILD_DIR:-/home/tahea/smash/build}
+TMP_DIR=${TMP_DIR:-${CONVERTER_DIR}/tmp}
+OSCAR_DST_DIR=${OSCAR_DST_DIR:-${CONVERTER_DIR}/oscarDst}
+LOG_DIR=${LOG_DIR:-${CONVERTER_DIR}/data/generator/logs}
+export ROOTSYS=${ROOTSYS:-/home/tahea/root_install}
+if [[ -f $ROOTSYS/bin/thisroot.sh ]]; then
+    source "$ROOTSYS/bin/thisroot.sh"
+fi
+if [[ ! -x $SMASH_BUILD_DIR/smash || ! -x $CONVERTER_DIR/converter ]]; then
+    echo "Set SMASH_BUILD_DIR and CONVERTER_DIR to directories with executable smash/converter." >&2
+    exit 1
+fi
+mkdir -p "$TMP_DIR" "$OSCAR_DST_DIR" "$LOG_DIR" || exit 1
+SMASH_LOG=${LOG_DIR}/${JOB_NAME}_smash.log
+CONVERT_LOG=${LOG_DIR}/${JOB_NAME}_convert.log
 
-SMASH_BUILD_DIR="/home/tahea/smash/build"
-TMP_DIR="${OSCAR_READER_DIR}/tmp"
-OSCAR_DST_DIR="${OSCAR_READER_DIR}/oscarDst"
-LOG_DIR="${OSCAR_READER_DIR}/data/generator/logs"
-
-# ========== Параметры ==========
-export N_TASKS=$1           # Количество ядер
-export N_RUNS=$2            # Количество прогонов
-export JOB_NAME=${3:-"job"} # Префикс имен
-
-# Создаем директории
-mkdir -p $TMP_DIR $OSCAR_DST_DIR $LOG_DIR
-
-# ========== Логирование ==========
-SMASH_LOG="${LOG_DIR}/${JOB_NAME}_smash.log"
-CONVERT_LOG="${LOG_DIR}/${JOB_NAME}_convert.log"
-
-# Очистка старых логов
-> "$SMASH_LOG"
-> "$CONVERT_LOG"
-
-log_smash() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" >> "$SMASH_LOG"
-}
-
-log_convert() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" >> "$CONVERT_LOG"
-}
-
-# ========== Основные функции ==========
-run_smash() {
-    local TASK=$1
-    local OUT_DIR="${TMP_DIR}/${JOB_NAME}_${TASK}"
-    
-    mkdir -p "$OUT_DIR"
-    
-    cd "$SMASH_BUILD_DIR" || exit 1
-    ./smash -o "$OUT_DIR" >> "$SMASH_LOG" 2>&1
-    
-    if [ $? -ne 0 ]; then
-        log_smash "[ERROR] генерации (Ядро $TASK) | RUN $RUN"
+run_task() {
+    local task=$1 run=$2
+    local output_dir=${TMP_DIR}/${JOB_NAME}_${task}_${run}
+    local root_file=${OSCAR_DST_DIR}/${JOB_NAME}_${task}_${run}.McDst.root
+    if [[ -e $output_dir ]]; then
+        echo "Preserving existing directory: $output_dir" >> "$SMASH_LOG"
+        return 1
     fi
-}
-
-run_oscar_reader() {
-    local TASK=$1
-    local OUT_DIR="${TMP_DIR}/${JOB_NAME}_${TASK}"
-    local OUTPUT_FILE="${OSCAR_DST_DIR}/${JOB_NAME}_${TASK}_${RUN}.McDst.root"
-    
-    cd "$OSCAR_READER_DIR" || exit 1
-    ./converter "${OUT_DIR}/full_event_history.oscar" "$OUTPUT_FILE" >> "$CONVERT_LOG" 2>&1
-    
-    if [ $? -ne 0 ]; then
-        log_convert "[ERROR] конвертации (Ядро $TASK) | RUN $RUN"
+    mkdir -p "$output_dir" || return 1
+    if ! (cd "$SMASH_BUILD_DIR" && ./smash -o "$output_dir" >> "$SMASH_LOG" 2>&1); then
+        echo "Generation failed: task=$task run=$run; preserved $output_dir" >> "$SMASH_LOG"
+        return 1
     fi
+    if ! "$CONVERTER_DIR/converter" "$output_dir/full_event_history.oscar" "$root_file" >> "$CONVERT_LOG" 2>&1; then
+        echo "Conversion failed: task=$task run=$run; preserved $output_dir" >> "$CONVERT_LOG"
+        return 1
+    fi
+    # This directory was created by this task; delete only after successful conversion.
+    rm -rf -- "$output_dir"
 }
 
-# ========== Главный цикл ==========
-echo "Старт задания $JOB_NAME в $(date)" | tee -a "$SMASH_LOG" "$CONVERT_LOG"
-
-for RUN in $(seq 1 "$N_RUNS"); do
-    echo "--- RUN $RUN/$N_RUNS ---" | tee -a "$SMASH_LOG" "$CONVERT_LOG"
-    
-    # Параллельный запуск
-    for TASK in $(seq 1 "$N_TASKS"); do
-        run_smash "$TASK" &
+for ((run = 1; run <= N_RUNS; ++run)); do
+    echo "Starting $JOB_NAME run $run/$N_RUNS"
+    pids=()
+    for ((task = 1; task <= N_TASKS; ++task)); do
+        run_task "$task" "$run" &
+        pids+=("$!")
     done
-    wait
-    
-    for TASK in $(seq 1 "$N_TASKS"); do
-        run_oscar_reader "$TASK" &
+    failed=0
+    for pid in "${pids[@]}"; do
+        if ! wait "$pid"; then
+            failed=1
+        fi
     done
-    wait
-
-    # Очистка временных файлов
-    for TASK in $(seq 1 "$N_TASKS"); do
-        rm -rf "${TMP_DIR}/${JOB_NAME}_${TASK}"
-    done
+    if ((failed)); then
+        echo "Run failed; original OSCAR files for failed tasks were preserved. See $LOG_DIR." >&2
+        exit 1
+    fi
 done
-
-echo "Завершено в $(date)" | tee -a "$SMASH_LOG" "$CONVERT_LOG"

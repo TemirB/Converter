@@ -1,0 +1,63 @@
+cmake_minimum_required(VERSION 3.16)
+project(OscarConverter LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+find_package(ROOT REQUIRED COMPONENTS Core RIO Tree TreePlayer Physics EG)
+include(CTest)
+
+set(MCDST_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sthbtmaker/StRoot/McDst" CACHE PATH "McDst source directory")
+set(MCDST_INCLUDE_DIR "${MCDST_SOURCE_DIR}" CACHE PATH "McDst headers")
+set(MCDST_LIBRARY "" CACHE FILEPATH "Optional prebuilt McDst library")
+option(CONVERTER_SANITIZE "Enable address and undefined behavior sanitizers" OFF)
+option(CONVERTER_PROFILE "Enable gprof instrumentation" OFF)
+
+if(MCDST_LIBRARY)
+    add_library(converter_mcdst UNKNOWN IMPORTED)
+    set_target_properties(converter_mcdst PROPERTIES IMPORTED_LOCATION "${MCDST_LIBRARY}" INTERFACE_INCLUDE_DIRECTORIES "${MCDST_INCLUDE_DIR}")
+else()
+    foreach(name McEvent McParticle McRun)
+        if(NOT EXISTS "${MCDST_SOURCE_DIR}/${name}.cxx" OR NOT EXISTS "${MCDST_INCLUDE_DIR}/${name}.h")
+            message(FATAL_ERROR "Set MCDST_SOURCE_DIR or MCDST_INCLUDE_DIR/MCDST_LIBRARY to your McDst installation")
+        endif()
+    endforeach()
+    add_library(converter_mcdst SHARED
+        "${MCDST_SOURCE_DIR}/McEvent.cxx" "${MCDST_SOURCE_DIR}/McParticle.cxx" "${MCDST_SOURCE_DIR}/McRun.cxx")
+    target_compile_definitions(converter_mcdst PUBLIC __ROOT__)
+    target_include_directories(converter_mcdst SYSTEM PUBLIC "${MCDST_INCLUDE_DIR}")
+    target_link_libraries(converter_mcdst PUBLIC ROOT::Core ROOT::RIO ROOT::Physics ROOT::EG)
+    ROOT_GENERATE_DICTIONARY(G__ConverterMcDst
+        "${MCDST_INCLUDE_DIR}/McEvent.h" "${MCDST_INCLUDE_DIR}/McParticle.h" "${MCDST_INCLUDE_DIR}/McRun.h"
+        MODULE converter_mcdst
+        LINKDEF "${CMAKE_CURRENT_SOURCE_DIR}/include/ConverterMcDstLinkDef.h"
+        OPTIONS -D__ROOT__ -I${MCDST_INCLUDE_DIR})
+endif()
+
+add_library(converter_core STATIC src/OscarReader.cpp src/OscarConverter.cpp src/McDstWriter.cpp src/RootConverter.cpp)
+target_include_directories(converter_core PUBLIC include)
+target_include_directories(converter_core SYSTEM PUBLIC "${MCDST_INCLUDE_DIR}")
+target_compile_definitions(converter_core PUBLIC __ROOT__)
+target_compile_options(converter_core PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(converter_core PUBLIC converter_mcdst ROOT::Core ROOT::RIO ROOT::Tree ROOT::TreePlayer ROOT::Physics ROOT::EG)
+add_executable(converter src/converter.cpp)
+target_link_libraries(converter PRIVATE converter_core)
+
+if(CONVERTER_SANITIZE)
+    target_compile_options(converter_core PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(converter_core PUBLIC -fsanitize=address,undefined)
+endif()
+if(CONVERTER_PROFILE)
+    if(APPLE)
+        message(FATAL_ERROR "gprof instrumentation is unavailable on macOS; use Instruments")
+    endif()
+    target_compile_options(converter_core PUBLIC -pg)
+    target_link_options(converter_core PUBLIC -pg)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(converter_tests tests/converter_tests.cpp)
+    target_link_libraries(converter_tests PRIVATE converter_core)
+    target_compile_options(converter_tests PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME converter_tests COMMAND converter_tests)
+endif()

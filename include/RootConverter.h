@@ -2,4 +2,4 @@
 
 #include <string>
 
-void ConvertRootToMcDst(const std::string& inName, const std::string& outName);
+bool ConvertRootToMcDst(const std::string& inName, const std::string& outName);

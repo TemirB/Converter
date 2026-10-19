@@ -1,84 +1,95 @@
-# Makefile для компиляции программы
+ROOT_CONFIG ?= root-config
+ROOTCLING ?= $(shell $(ROOT_CONFIG) --bindir 2>/dev/null)/rootcling
+ROOT_CFLAGS := $(shell $(ROOT_CONFIG) --cflags 2>/dev/null)
+ROOT_LIBS := $(shell $(ROOT_CONFIG) --libs 2>/dev/null)
+ROOT_LIBDIR := $(shell $(ROOT_CONFIG) --libdir 2>/dev/null)
 
-# Путь к установке ROOT
-ROOT_DIR = /home/tahea/root_install
+MCDST_SOURCE_DIR ?= ../sthbtmaker/StRoot/McDst
+MCDST_INCLUDE_DIR ?= $(MCDST_SOURCE_DIR)
+MCDST_LIBRARY ?=
+BUILD_DIR ?= .make
+TARGET ?= converter
+DICTIONARY_NAME ?= G__ConverterMcDst
+CXXFLAGS ?= -O2 -g
 
-# Путь к библиотекам McDst
-MCDST_DIR = /home/tahea/external/McDst/build
-MCDST_LIB = /home/tahea/external/McDst/include
+PROJECT_CPPFLAGS = -D__ROOT__ -Iinclude -isystem "$(abspath $(MCDST_INCLUDE_DIR))"
+COMPILE_FLAGS = -std=c++17 $(ROOT_CFLAGS) -Wall -Wextra -Wpedantic -MMD -MP
+LINK_LIBS = $(ROOT_LIBS) -lEG -Wl,-rpath,"$(ROOT_LIBDIR)"
+CORE_NAMES = OscarReader OscarConverter McDstWriter RootConverter
+CORE_OBJECTS = $(addprefix $(BUILD_DIR)/,$(addsuffix .o,$(CORE_NAMES)))
+MCDST_NAMES = McEvent McParticle McRun
+MCDST_HEADERS = $(addprefix $(MCDST_INCLUDE_DIR)/,$(addsuffix .h,$(MCDST_NAMES)))
 
-# Компилятор
-CXX = g++
+ifeq ($(strip $(MCDST_LIBRARY)),)
+DICTIONARY_SOURCE = $(BUILD_DIR)/$(DICTIONARY_NAME).cxx
+DICTIONARY_PCM = $(DICTIONARY_NAME)_rdict.pcm
+MCDST_OBJECTS = $(addprefix $(BUILD_DIR)/,$(addsuffix .o,$(MCDST_NAMES))) $(BUILD_DIR)/$(DICTIONARY_NAME).o
+else
+MCDST_LINK = "$(abspath $(MCDST_LIBRARY))" -Wl,-rpath,"$(dir $(abspath $(MCDST_LIBRARY)))"
+MCDST_DEPENDENCY = $(MCDST_LIBRARY)
+endif
 
-# Флаги компилятора
-CXXFLAGS = $(shell root-config --cflags) -fPIC -Wall -std=c++17
-CXXFLAGS += -I$(MCDST_LIB) -I$(ROOT_DIR)/include -Iinclude
-LIBS = $(shell root-config --glibs) -L$(ROOT_DIR)/lib -lCore -lRIO -lTree -lHist -lGraf -lGpad -lPhysics -lThread -lm
-LIBS += -L$(MCDST_DIR) -lMcDst
+.DEFAULT_GOAL := all
+.DELETE_ON_ERROR:
+.PHONY: all build test check-deps profile clean distclean help
 
-# Имя исполняемого файла
-TARGET = converter
-
-# Директории
-SRC_DIR = src
-BUILD_DIR = build
-BUILD_DIR_PROFILE = build_profile
-
-# Источники
-SRCS = $(wildcard $(SRC_DIR)/*.cpp)
-OBJS = $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRCS))
-OBJS_PROFILE = $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR_PROFILE)/%.o, $(SRCS))
-
-# Флаги для профайлинга (gprof)
-PROFILE_FLAGS = -pg
-
-# Создать директории при необходимости
-$(shell mkdir -p $(BUILD_DIR))
-$(shell mkdir -p $(BUILD_DIR_PROFILE))
-
-# Правила сборки
 all: $(TARGET)
+build: all
 
-# Сборка исполняемого файла (обычная)
-$(TARGET): $(OBJS)
-	$(CXX) -o $@ $^ $(LIBS)
+$(TARGET): $(CORE_OBJECTS) $(BUILD_DIR)/converter.o $(MCDST_OBJECTS) $(MCDST_DEPENDENCY) Makefile | check-deps $(DICTIONARY_PCM)
+	$(CXX) $(LDFLAGS) -o "$@" $(filter %.o,$^) $(MCDST_LINK) $(LINK_LIBS)
 
-# Сборка с профайлингом (gprof)
-profile: $(BUILD_DIR_PROFILE)/$(TARGET)
-	cp $(BUILD_DIR_PROFILE)/$(TARGET) $(TARGET)_profile
+converter_tests: $(CORE_OBJECTS) $(BUILD_DIR)/converter_tests.o $(MCDST_OBJECTS) $(MCDST_DEPENDENCY) Makefile | check-deps $(DICTIONARY_PCM)
+	$(CXX) $(LDFLAGS) -o "$@" $(filter %.o,$^) $(MCDST_LINK) $(LINK_LIBS)
 
-# Профилированная версия исполняемого файла
-$(BUILD_DIR_PROFILE)/$(TARGET): $(OBJS_PROFILE)
-	$(CXX) -pg -o $@ $^ $(LIBS)
+test: converter_tests
+	./converter_tests
 
-# Компиляция объектных файлов (обычная)
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+$(BUILD_DIR)/%.o: src/%.cpp Makefile $(MCDST_HEADERS) | check-deps $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(PROJECT_CPPFLAGS) $(CXXFLAGS) $(COMPILE_FLAGS) -c "$<" -o "$@"
 
-# Компиляция объектных файлов (с профайлингом)
-$(BUILD_DIR_PROFILE)/%.o: $(SRC_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) $(PROFILE_FLAGS) -c $< -o $@
+$(BUILD_DIR)/converter_tests.o: tests/converter_tests.cpp Makefile $(MCDST_HEADERS) | check-deps $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(PROJECT_CPPFLAGS) $(CXXFLAGS) $(COMPILE_FLAGS) -c "$<" -o "$@"
 
-# Запуск профайлера (автоматический анализ)
-run-profile: profile
-	./$(TARGET)_profile
-	gprof $(TARGET)_profile gmon.out > profile_report.txt
-	@echo "Профайлинг завершён. Отчёт в profile_report.txt"
+ifeq ($(strip $(MCDST_LIBRARY)),)
+$(addprefix $(BUILD_DIR)/,$(addsuffix .o,$(MCDST_NAMES))): $(BUILD_DIR)/%.o: $(MCDST_SOURCE_DIR)/%.cxx Makefile $(MCDST_HEADERS) | check-deps $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(PROJECT_CPPFLAGS) $(CXXFLAGS) $(COMPILE_FLAGS) -c "$<" -o "$@"
 
-# Очистка
+$(DICTIONARY_SOURCE): $(MCDST_HEADERS) include/ConverterMcDstLinkDef.h Makefile | check-deps $(BUILD_DIR)
+	"$(ROOTCLING)" -f "$@" -D__ROOT__ -I"$(abspath $(MCDST_INCLUDE_DIR))" $(foreach header,$(MCDST_HEADERS),"$(abspath $(header))") include/ConverterMcDstLinkDef.h
+
+$(BUILD_DIR)/$(DICTIONARY_NAME).o: $(DICTIONARY_SOURCE) Makefile | check-deps
+	$(CXX) $(CPPFLAGS) $(PROJECT_CPPFLAGS) $(CXXFLAGS) $(COMPILE_FLAGS) -c "$<" -o "$@"
+
+# Keep ROOT's dictionary metadata beside the executable, including when run elsewhere.
+$(DICTIONARY_PCM): $(DICTIONARY_SOURCE)
+	cp "$(BUILD_DIR)/$(DICTIONARY_PCM)" "$@"
+endif
+
+$(BUILD_DIR):
+	mkdir -p "$@"
+
+check-deps:
+	@command -v "$(ROOT_CONFIG)" >/dev/null 2>&1 || { echo "ROOT not found: source /path/to/root/bin/thisroot.sh or set ROOT_CONFIG=/path/to/root-config." >&2; exit 1; }
+ifeq ($(strip $(MCDST_LIBRARY)),)
+	@test -x "$(ROOTCLING)" || { echo "rootcling not found: set ROOTCLING=/path/to/rootcling." >&2; exit 1; }
+endif
+
+profile:
+	@if [ "$$(uname -s)" = Darwin ]; then echo "gprof is unavailable on macOS; use Instruments." >&2; exit 1; fi
+	$(MAKE) BUILD_DIR=.make_profile TARGET=converter_profile DICTIONARY_NAME=G__ConverterMcDst_profile CXXFLAGS="$(CXXFLAGS) -pg" LDFLAGS="$(LDFLAGS) -pg" all
+
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET)
+	rm -rf -- "$(BUILD_DIR)"
+	rm -f -- "$(TARGET)" converter_tests "$(DICTIONARY_NAME)_rdict.pcm"
 
-# Полная очистка (включая профили)
 distclean: clean
-	rm -rf $(BUILD_DIR_PROFILE) $(TARGET)_profile gmon.out profile_report.txt
-	rm -f *~
+	rm -rf -- .make_profile
+	rm -f -- converter_profile G__ConverterMcDst_profile_rdict.pcm gmon.out
 
-# Помощь
 help:
-	@echo "Доступные цели:"
-	@echo "  make          - Обычная сборка"
-	@echo "  make profile  - Сборка с профайлингом (создаёт converter_profile)"
-	@echo "  make run-profile - Сборка + запуск + анализ gprof"
-	@echo "  make clean    - Очистка обычных файлов"
-	@echo "  make distclean - Полная очистка (включая профиль)"
+	@echo "Run make or make test from the Converter root; CMake is optional."
+	@echo "Set MCDST_SOURCE_DIR, or MCDST_INCLUDE_DIR and MCDST_LIBRARY."
+	@echo "Set ROOT_CONFIG and ROOTCLING if ROOT is outside PATH."
+
+-include $(CORE_OBJECTS:.o=.d) $(BUILD_DIR)/converter.d $(BUILD_DIR)/converter_tests.d $(MCDST_OBJECTS:.o=.d)
