@@ -3,6 +3,7 @@
 #include <string>
 
 struct ConversionOptions {
+    // Also retain events whose final particle count is exactly 394.
     bool keep_empty_events = false;
 };
 

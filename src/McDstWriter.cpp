@@ -20,6 +20,10 @@
 
 namespace fs = std::filesystem;
 
+namespace {
+constexpr double kSpectatorCoordinate = -999.;
+}
+
 struct McDstWriter::Impl {
     std::string destination, temporary, definitions, error;
     std::unique_ptr<TFile> file;
@@ -122,9 +126,13 @@ bool McDstWriter::WriteEvent(const OscarEvent& source) {
     int child[2] = {-1, -1};
     for (std::size_t i = 0; i < source.particles.size(); ++i) {
         const auto& p = source.particles[i];
+        const bool spectator = p.spectator;
+        const double x = spectator ? kSpectatorCoordinate : p.x;
+        const double y = spectator ? kSpectatorCoordinate : p.y;
+        const double z = spectator ? kSpectatorCoordinate : p.z;
         new ((*w.particles)[static_cast<int>(i)])
-            McParticle(static_cast<int>(i), p.pdg, p.spectator ? 1 : 0, -1, 0, -1, -1, child, p.px,
-                       p.py, p.pz, p.p0, p.x, p.y, p.z, p.t);
+            McParticle(static_cast<int>(i), p.pdg, spectator ? 1 : 0, -1, 0, -1, -1, child,
+                       p.px, p.py, p.pz, p.p0, x, y, z, p.t);
         w.oscar_ids.push_back(p.id);
     }
     auto* event = new ((*w.events)[0]) McEvent();

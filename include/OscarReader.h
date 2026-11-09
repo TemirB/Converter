@@ -14,6 +14,7 @@ struct OscarEvent {
     double final_time = 0.;
     bool projectile_target_scattering = false;
     int initial_nucleons = 0;
+    // Au+Au ID convention: initial nucleons minus those surviving with ID < 394.
     int participants = 0;
     int spectators = 0;
     int binary_collisions = 0;
@@ -23,6 +24,7 @@ struct OscarEvent {
 };
 
 // Streaming reader of complete, serial SMASH collision histories.
+// Spectators are selected by final ID < 394, matching OscarConverter's Au+Au convention.
 // False means EOF or an error; Error() distinguishes these outcomes.
 class OscarReader {
   public:

@@ -8,6 +8,7 @@
 #include <unordered_set>
 
 namespace {
+constexpr int kInitialParticles = 394;
 constexpr int kMaxParticles = std::numeric_limits<unsigned short>::max();
 constexpr int kElastic = 1;
 constexpr int kDecay = 5;
@@ -91,7 +92,8 @@ bool OscarReader::ReadNext(OscarEvent& event) {
         return false;
     event = OscarEvent{};
     std::unordered_map<int, Particle> initial, live, last_interaction;
-    std::unordered_set<int> all_ids, participants;
+    std::unordered_set<int> all_ids;
+    int surviving_initial_spectators = 0;
     bool started = false, final_seen = false, hadronic_seen = false;
     std::vector<Particle> block;
     std::string line;
@@ -193,9 +195,6 @@ bool OscarReader::ReadNext(OscarEvent& event) {
                                 std::to_string(p.id));
                 }
                 incoming_ids.insert(p.id);
-                const auto original = initial.find(p.id);
-                if (hadronic && original != initial.end() && IsNucleon(original->second.pdg))
-                    participants.insert(p.id);
             }
             for (const auto& p : outgoing) {
                 if (all_ids.count(p.id) && !incoming_ids.count(p.id)) {
@@ -279,10 +278,13 @@ bool OscarReader::ReadNext(OscarEvent& event) {
                     return Fail("final particle list contains different output times");
                 }
                 const auto original = initial.find(p.id);
-                p.spectator = original != initial.end() && IsNucleon(original->second.pdg) &&
-                              !participants.count(p.id);
-                if (p.spectator)
+                // Same Au+Au ID convention as OscarConverter; elastic scattering retains IDs.
+                p.spectator = p.id < kInitialParticles;
+                if (p.spectator) {
                     ++event.spectators;
+                    if (original != initial.end() && IsNucleon(original->second.pdg))
+                        ++surviving_initial_spectators;
+                }
                 if (!p.spectator) {
                     const auto last = last_interaction.find(p.id);
                     const Particle* emission = nullptr;
@@ -322,7 +324,7 @@ bool OscarReader::ReadNext(OscarEvent& event) {
                 return Fail("invalid projectile/target scattering flag");
             event.projectile_target_scattering = key == "empty" ? value == "no" : value == "yes";
         }
-        event.participants = static_cast<int>(participants.size());
+        event.participants = event.initial_nucleons - surviving_initial_spectators;
         if (event.projectile_target_scattering && !hadronic_seen) {
             return Fail("scattering flag yes without interaction history");
         }
