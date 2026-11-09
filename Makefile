@@ -4,7 +4,7 @@ ROOT_CFLAGS := $(shell $(ROOT_CONFIG) --cflags 2>/dev/null)
 ROOT_LIBS := $(shell $(ROOT_CONFIG) --libs 2>/dev/null)
 ROOT_LIBDIR := $(shell $(ROOT_CONFIG) --libdir 2>/dev/null)
 
-MCDST_SOURCE_DIR ?= ../sthbtmaker/StRoot/McDst
+MCDST_SOURCE_DIR ?= vendor/McDst
 MCDST_INCLUDE_DIR ?= $(MCDST_SOURCE_DIR)
 MCDST_LIBRARY ?=
 BUILD_DIR ?= .make
@@ -107,7 +107,8 @@ distclean: clean
 help:
 	@echo "Run make or make test from the Converter root; CMake is optional."
 	@echo "Standalone lab postprocessor: make mcdst_lab or make test-lab."
-	@echo "Set MCDST_SOURCE_DIR, or MCDST_INCLUDE_DIR and MCDST_LIBRARY."
+	@echo "Bundled McDst sources: vendor/McDst; no sibling repository is required."
+	@echo "Override MCDST_SOURCE_DIR, or MCDST_INCLUDE_DIR and MCDST_LIBRARY if needed."
 	@echo "Set ROOT_CONFIG and ROOTCLING if ROOT is outside PATH."
 
 -include $(CORE_OBJECTS:.o=.d) $(BUILD_DIR)/converter.d $(BUILD_DIR)/converter_tests.d $(MCDST_OBJECTS:.o=.d)

@@ -54,10 +54,19 @@ cmake --build build --target mcdst_lab --parallel 4
 ./build/mcdst_lab --threads 4 ./cm_files ./lab_files
 ```
 
-Требования к ROOT и McDst и переменные `ROOT_CONFIG`, `MCDST_SOURCE_DIR`,
-`MCDST_INCLUDE_DIR`, `MCDST_LIBRARY` те же, что у конвертера. При сборке из исходников
-McDst их словарь входит в программу. `make mcdst_lab` не компилирует реализацию конвертера.
+Для обычной сборки достаточно ROOT, GNU Make и компилятора C++17. Исходники трёх
+классов McDst находятся в `vendor/McDst`; внешний репозиторий `sthbtmaker` не требуется.
+Переменные `ROOT_CONFIG`, `MCDST_SOURCE_DIR`, `MCDST_INCLUDE_DIR`, `MCDST_LIBRARY`
+те же, что у конвертера, и позволяют явно выбрать другую установку ROOT или McDst.
+При сборке из исходников McDst их словарь входит в программу.
+`make mcdst_lab` не компилирует реализацию конвертера.
 При переносе программы нужно также перенести соответствующий файл словаря `.pcm`.
+
+Если старая копия проекта на другом компьютере сообщает
+`No rule to make target '../sthbtmaker/StRoot/McDst/McEvent.h'`, обновите исходники
+проекта вместе с каталогом `vendor/McDst`. Затем запустите `make -j4 mcdst_lab`.
+В старой версии без включённых классов укажите существующий внешний McDst явно:
+`make -j4 mcdst_lab MCDST_SOURCE_DIR=/actual/path/to/sthbtmaker/StRoot/McDst`.
 
 ## Физическое преобразование
 

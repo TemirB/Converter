@@ -9,7 +9,7 @@
 
 Он читает начальный список `in`, записи `interaction` и конечный список `out` каждого события. Для каждого ID сохраняется последняя полная запись из `in` или `interaction`. Блок `out` определяет только то, какие ID дожили до конца события: их координаты и импульсы берутся из сохранённой истории.
 
-Сборка из корня проекта требует GNU Make, компилятор C++17 и ROOT с библиотекой EG. Обычный `make` компилирует программу напрямую, без CMake. По умолчанию исходники McDst берутся из соседнего `../sthbtmaker/StRoot/McDst`; три нужных класса и их ROOT-словарь включаются в исполняемый файл, поэтому готовая библиотека McDst не нужна.
+Сборка из корня проекта требует GNU Make, компилятор C++17 и ROOT с библиотекой EG. Обычный `make` компилирует программу напрямую, без CMake. Три нужных класса McDst включены в репозиторий в `vendor/McDst`; они и их ROOT-словарь собираются в исполняемый файл. Соседний репозиторий `sthbtmaker` и готовая библиотека McDst для обычной сборки не нужны.
 
 ```bash
 cd /path/to/Converter
@@ -28,11 +28,14 @@ make -j4
 
 Либо укажите путь явно: `make ROOT_CONFIG=/path/to/root/bin/root-config`. Путь к `rootcling` по умолчанию берётся из той же установки ROOT.
 
-Если McDst находится в другом месте:
+Если нужно использовать свою версию McDst вместо включённой в репозиторий:
 
 ```bash
 make MCDST_SOURCE_DIR=/path/to/McDst
 ```
+
+То же для программы ЛСО: `make -j4 mcdst_lab MCDST_SOURCE_DIR=/path/to/McDst`.
+Каталог должен содержать `McEvent`, `McParticle`, `McRun` — заголовки `.h` и исходники `.cxx`.
 
 Можно использовать установленную библиотеку:
 
@@ -43,10 +46,14 @@ make MCDST_INCLUDE_DIR=/path/to/McDst/include MCDST_LIBRARY=/path/to/libMcDst.so
 Для отдельной сборки через CMake сохранён прежний вариант:
 
 ```bash
-cmake -S . -B build -DMCDST_SOURCE_DIR=/path/to/McDst
+cmake -S . -B build
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
+
+При необходимости внешнюю версию задают флагом `-DMCDST_SOURCE_DIR=/path/to/McDst`.
+В старом каталоге сборки CMake мог сохраниться прежний путь к соседнему проекту;
+его можно заменить на `-DMCDST_SOURCE_DIR="$PWD/vendor/McDst" -DMCDST_INCLUDE_DIR="$PWD/vendor/McDst"`.
 
 Запуск:
 
