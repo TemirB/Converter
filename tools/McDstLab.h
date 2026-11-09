@@ -33,7 +33,8 @@ struct BatchResult {
 // Throws on failure. The destination is replaced only after a complete write.
 Result Process(const std::string& input, const std::string& output, const Options& options = {});
 
-// Processes *.root in this directory (not recursively), preserving filenames.
+// Processes *.root in this directory (not recursively), writing *.McDst.root.
+// The QA-only hist_only mode writes *.qa.root without an McDst tree.
 // threads == 0 selects hardware_concurrency; failures do not stop other files.
 BatchResult ProcessDirectory(const std::string& input, const std::string& output,
                              const Options& options = {}, unsigned threads = 0);

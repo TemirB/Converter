@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstring>
@@ -163,6 +164,19 @@ void CheckArray(TTree& tree, const char* name, const char* type) {
                 (!element || !element->GetClonesName() || !*element->GetClonesName() ||
                  std::string(element->GetClonesName()) == type),
             std::string("expected TClonesArray<") + type + "> branch " + name);
+}
+
+std::string OutputFilename(const std::filesystem::path& input, bool hist_only) {
+    std::string stem = input.stem().string();
+    constexpr std::string_view suffix = ".mcdst";
+    if (stem.size() >= suffix.size()) {
+        std::string ending = stem.substr(stem.size() - suffix.size());
+        std::transform(ending.begin(), ending.end(), ending.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ending == suffix)
+            stem.resize(stem.size() - suffix.size());
+    }
+    return stem + (hist_only ? ".qa.root" : ".McDst.root");
 }
 
 } // namespace
@@ -414,6 +428,14 @@ BatchResult ProcessDirectory(const std::string& input_name, const std::string& o
     }
     Require(!files.empty(), "no .root files in input directory (scan is not recursive)");
     std::sort(files.begin(), files.end());
+    std::vector<std::filesystem::path> destinations;
+    std::unordered_set<std::string> output_names;
+    for (const auto& file : files) {
+        const auto filename = OutputFilename(file, options.hist_only);
+        Require(output_names.insert(filename).second,
+                "multiple input files map to the same output filename: " + filename);
+        destinations.push_back(output / filename);
+    }
     std::filesystem::create_directories(output);
     Initialize();
     const unsigned available =
@@ -430,11 +452,12 @@ BatchResult ProcessDirectory(const std::string& input_name, const std::string& o
             if (index >= files.size())
                 return;
             try {
-                const auto report = Process(files[index].string(),
-                                            (output / files[index].filename()).string(), options);
+                const auto report =
+                    Process(files[index].string(), destinations[index].string(), options);
                 std::lock_guard<std::mutex> lock(reporting);
                 ++result.succeeded;
-                std::cout << files[index].filename().string() << ": " << report.events
+                std::cout << files[index].filename().string() << " -> "
+                          << destinations[index].filename().string() << ": " << report.events
                           << " events, " << report.particles << " particles";
                 if (report.unknown_pdg)
                     std::cout << "; unknown PDG records=" << report.unknown_pdg

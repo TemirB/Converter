@@ -317,21 +317,41 @@ int main(int argc, char** argv) {
 
         fs::create_directory(temp.path / "batch");
         fs::copy_file(input, temp.path / "batch/a.root");
-        fs::copy_file(input, temp.path / "batch/b.root");
+        fs::copy_file(input, temp.path / "batch/b.McDst.root");
+        fs::copy_file(input, temp.path / "batch/c.mcDst.root");
         fs::copy_file(input, temp.path / "batch/ignore.dat");
         fs::create_directory(temp.path / "batch/nested");
         fs::copy_file(input, temp.path / "batch/nested/ignore.root");
         auto report = mcdst_lab::ProcessDirectory((temp.path / "batch").string(),
                                                   (temp.path / "batch-out").string(), {}, 8);
-        Check(report.workers == 2 && report.succeeded == 2 && report.failed == 0,
+        Check(report.workers == 3 && report.succeeded == 3 && report.failed == 0,
               "parallel directory scheduling failed");
-        CheckTransformed(input, temp.path / "batch-out/a.root");
-        CheckTransformed(input, temp.path / "batch-out/b.root");
+        CheckTransformed(input, temp.path / "batch-out/a.McDst.root");
+        CheckTransformed(input, temp.path / "batch-out/b.McDst.root");
+        CheckTransformed(input, temp.path / "batch-out/c.McDst.root");
+        Check(!fs::exists(temp.path / "batch-out/b.McDst.McDst.root"),
+              "McDst suffix was duplicated");
         Check(!fs::exists(temp.path / "batch-out/ignore.dat"), "unexpected non-ROOT output");
         fs::copy_file(bad_input, temp.path / "batch/bad.root");
         report = mcdst_lab::ProcessDirectory((temp.path / "batch").string(),
                                              (temp.path / "batch-hist").string(), hist_only, 0);
-        Check(report.succeeded == 2 && report.failed == 1, "batch failure handling failed");
+        Check(report.succeeded == 3 && report.failed == 1, "batch failure handling failed");
+        {
+            TFile qa((temp.path / "batch-hist/b.qa.root").c_str(), "READ");
+            Check(!qa.Get("McDst"), "QA output was incorrectly labeled as McDst");
+            CheckHistograms(qa);
+        }
+        fs::create_directory(temp.path / "colliding");
+        fs::copy_file(input, temp.path / "colliding/a.root");
+        fs::copy_file(input, temp.path / "colliding/a.McDst.root");
+        Reject(
+            [&] {
+                mcdst_lab::ProcessDirectory((temp.path / "colliding").string(),
+                                            (temp.path / "colliding-out").string());
+            },
+            "same output filename");
+        Check(!fs::exists(temp.path / "colliding-out"),
+              "filename collision was detected after starting output writes");
         Reject(
             [&] {
                 mcdst_lab::ProcessDirectory((temp.path / "batch").string(),

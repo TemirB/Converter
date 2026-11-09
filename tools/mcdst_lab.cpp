@@ -10,13 +10,13 @@ namespace {
 void Usage() {
     std::cout << "Usage: mcdst_lab [options] INPUT_DIRECTORY OUTPUT_DIRECTORY\n"
                  "  --threads N|all      Workers across files (default all hardware threads)\n"
-                 "  --hist-only          Write histograms and counts, omit particle tree\n"
+                 "  --hist-only          Write QA-only .qa.root files without McDst tree\n"
                  "  --sqrtsnn GeV        Symmetric CM beam energy (default 3)\n"
                  "  --nucleon-mass GeV   SMASH beam nucleon mass (default 0.938)\n"
                  "  --eta-max value      Plot range [-value,value] (default 6)\n"
                  "  --pt-max GeV         Plot range [0,value] (default 3)\n"
                  "Processes .root files directly in INPUT_DIRECTORY (not recursive).\n"
-                 "Creates OUTPUT_DIRECTORY; keeps input filenames.\n"
+                 "Creates OUTPUT_DIRECTORY; writes <name>.McDst.root with McDst/Event/Particle.\n"
                  "Input must be in SMASH CM axes (Projectile +z, Target -z).\n"
                  "Output: Target rest, +z opposite Projectile; no particle/event cuts.\n"
                  "An existing output is replaced only after success.\n";
