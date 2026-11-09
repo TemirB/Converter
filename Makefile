@@ -31,7 +31,7 @@ endif
 
 .DEFAULT_GOAL := all
 .DELETE_ON_ERROR:
-.PHONY: all build test check-deps profile clean distclean help
+.PHONY: all build test test-lab check-deps profile clean distclean help
 
 all: $(TARGET)
 build: all
@@ -44,6 +44,22 @@ converter_tests: $(CORE_OBJECTS) $(BUILD_DIR)/converter_tests.o $(MCDST_OBJECTS)
 
 test: converter_tests
 	./converter_tests
+
+# Standalone postprocessor: deliberately does not link the converter implementation.
+mcdst_lab: $(BUILD_DIR)/McDstLab.o $(BUILD_DIR)/mcdst_lab.o $(MCDST_OBJECTS) $(MCDST_DEPENDENCY) Makefile | check-deps $(DICTIONARY_PCM)
+	$(CXX) $(LDFLAGS) -o "$@" $(filter %.o,$^) $(MCDST_LINK) $(LINK_LIBS)
+
+mcdst_lab_tests: $(BUILD_DIR)/McDstLab.o $(BUILD_DIR)/mcdst_lab_tests.o $(MCDST_OBJECTS) $(MCDST_DEPENDENCY) Makefile | check-deps $(DICTIONARY_PCM)
+	$(CXX) $(LDFLAGS) -o "$@" $(filter %.o,$^) $(MCDST_LINK) $(LINK_LIBS)
+
+test-lab: mcdst_lab_tests mcdst_lab
+	./mcdst_lab_tests
+
+$(BUILD_DIR)/McDstLab.o $(BUILD_DIR)/mcdst_lab.o: $(BUILD_DIR)/%.o: tools/%.cpp Makefile $(MCDST_HEADERS) | check-deps $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(PROJECT_CPPFLAGS) $(CXXFLAGS) $(COMPILE_FLAGS) -c "$<" -o "$@"
+
+$(BUILD_DIR)/mcdst_lab_tests.o: tests/mcdst_lab_tests.cpp Makefile $(MCDST_HEADERS) | check-deps $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(PROJECT_CPPFLAGS) -Itools $(CXXFLAGS) $(COMPILE_FLAGS) -c "$<" -o "$@"
 
 $(BUILD_DIR)/%.o: src/%.cpp Makefile $(MCDST_HEADERS) | check-deps $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(PROJECT_CPPFLAGS) $(CXXFLAGS) $(COMPILE_FLAGS) -c "$<" -o "$@"
@@ -82,6 +98,7 @@ profile:
 clean:
 	rm -rf -- "$(BUILD_DIR)"
 	rm -f -- "$(TARGET)" converter_tests "$(DICTIONARY_NAME)_rdict.pcm"
+	rm -f -- mcdst_lab mcdst_lab_tests
 
 distclean: clean
 	rm -rf -- .make_profile
@@ -89,7 +106,9 @@ distclean: clean
 
 help:
 	@echo "Run make or make test from the Converter root; CMake is optional."
+	@echo "Standalone lab postprocessor: make mcdst_lab or make test-lab."
 	@echo "Set MCDST_SOURCE_DIR, or MCDST_INCLUDE_DIR and MCDST_LIBRARY."
 	@echo "Set ROOT_CONFIG and ROOTCLING if ROOT is outside PATH."
 
 -include $(CORE_OBJECTS:.o=.d) $(BUILD_DIR)/converter.d $(BUILD_DIR)/converter_tests.d $(MCDST_OBJECTS:.o=.d)
+-include $(BUILD_DIR)/McDstLab.d $(BUILD_DIR)/mcdst_lab.d $(BUILD_DIR)/mcdst_lab_tests.d
