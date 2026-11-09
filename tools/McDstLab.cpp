@@ -412,8 +412,12 @@ Result Process(const std::string& input_name, const std::string& output_name,
     return {entries, total_particles, total_unknown};
 }
 
-BatchResult ProcessDirectory(const std::string& input_name, const std::string& output_name,
-                             const Options& options, unsigned threads) {
+BatchResult ProcessDirectory(
+    const std::string& input_name, 
+    const std::string& output_name,
+    const Options& options, 
+    unsigned threads,
+    std::size_t max_files) {
     const Frame frame(options);
     Require(std::filesystem::is_directory(input_name), "input must be a directory");
     const auto input = std::filesystem::canonical(input_name);
@@ -428,6 +432,9 @@ BatchResult ProcessDirectory(const std::string& input_name, const std::string& o
     }
     Require(!files.empty(), "no .root files in input directory (scan is not recursive)");
     std::sort(files.begin(), files.end());
+
+    if (files.size() > max_files) files.resize(max_files);
+
     std::vector<std::filesystem::path> destinations;
     std::unordered_set<std::string> output_names;
     for (const auto& file : files) {

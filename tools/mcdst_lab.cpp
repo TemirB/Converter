@@ -10,6 +10,7 @@ namespace {
 void Usage() {
     std::cout << "Usage: mcdst_lab [options] INPUT_DIRECTORY OUTPUT_DIRECTORY\n"
                  "  --threads N|all      Workers across files (default all hardware threads)\n"
+                 "  --max-files N       Maximum number of input files (default all)\n"
                  "  --hist-only          Write QA-only .qa.root files without McDst tree\n"
                  "  --sqrtsnn GeV        Symmetric CM beam energy (default 3)\n"
                  "  --nucleon-mass GeV   SMASH beam nucleon mass (default 0.938)\n"
@@ -26,6 +27,7 @@ void Usage() {
 int main(int argc, char** argv) {
     mcdst_lab::Options options;
     unsigned threads = 0;
+    std::size_t max_files = 0; // 0 = все файлы
     std::vector<std::string> paths;
     try {
         bool positional = false;
@@ -59,6 +61,19 @@ int main(int argc, char** argv) {
                 }
                 continue;
             }
+            if (!positional && arg == "--max-files") {
+                if (++i == argc)
+                    throw std::runtime_error("missing value for --max-files");
+
+                const std::string count = argv[i];
+
+                if (count.empty() ||
+                    count.find_first_not_of("0123456789") != std::string::npos)
+                    throw std::runtime_error("--max-files requires a non-negative integer");
+
+                max_files = std::stoull(count);
+                continue;
+            }
             if (!positional && !arg.empty() && arg.front() == '-') {
                 double* value = nullptr;
                 if (arg == "--sqrtsnn")
@@ -90,7 +105,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     try {
-        const auto result = mcdst_lab::ProcessDirectory(paths[0], paths[1], options, threads);
+        const auto result = mcdst_lab::ProcessDirectory(paths[0], paths[1], options, threads, max_files);
         return result.failed == 0 ? 0 : 2;
     } catch (const std::exception& error) {
         std::cerr << "Lab processing failed: " << error.what() << '\n';

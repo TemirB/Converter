@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 
 namespace mcdst_lab {
@@ -36,7 +37,12 @@ Result Process(const std::string& input, const std::string& output, const Option
 // Processes *.root in this directory (not recursively), writing *.McDst.root.
 // The QA-only hist_only mode writes *.qa.root without an McDst tree.
 // threads == 0 selects hardware_concurrency; failures do not stop other files.
-BatchResult ProcessDirectory(const std::string& input, const std::string& output,
-                             const Options& options = {}, unsigned threads = 0);
-
+BatchResult ProcessDirectory(
+    const std::string& input,
+    const std::string& output,
+    const Options& options = {},
+    unsigned threads = 0,
+    std::size_t max_files = 0
+);
+    
 } // namespace mcdst_lab
