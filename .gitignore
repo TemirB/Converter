@@ -5,6 +5,7 @@ build_profile
 converter
 converter_profile
 converter_tests
+converter_validation_tests
 mcdst_lab
 .cache
 mcdst_lab_tests
@@ -16,3 +17,4 @@ G__ConverterMcDst*_rdict.pcm
 *.txt
 !CMakeLists.txt
 *.out
+*.validation/

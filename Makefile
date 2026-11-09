@@ -15,7 +15,7 @@ CXXFLAGS ?= -O2 -g
 PROJECT_CPPFLAGS = -D__ROOT__ -Iinclude -isystem "$(abspath $(MCDST_INCLUDE_DIR))"
 COMPILE_FLAGS = -std=c++17 $(ROOT_CFLAGS) -Wall -Wextra -Wpedantic -MMD -MP
 LINK_LIBS = $(ROOT_LIBS) -lEG -Wl,-rpath,"$(ROOT_LIBDIR)"
-CORE_NAMES = OscarReader OscarConverter McDstWriter RootConverter
+CORE_NAMES = OscarReader OscarConverter OscarConverterV1 ConverterValidation McDstWriter RootConverter
 CORE_OBJECTS = $(addprefix $(BUILD_DIR)/,$(addsuffix .o,$(CORE_NAMES)))
 MCDST_NAMES = McEvent McParticle McRun
 MCDST_HEADERS = $(addprefix $(MCDST_INCLUDE_DIR)/,$(addsuffix .h,$(MCDST_NAMES)))
@@ -42,8 +42,12 @@ $(TARGET): $(CORE_OBJECTS) $(BUILD_DIR)/converter.o $(MCDST_OBJECTS) $(MCDST_DEP
 converter_tests: $(CORE_OBJECTS) $(BUILD_DIR)/converter_tests.o $(MCDST_OBJECTS) $(MCDST_DEPENDENCY) Makefile | check-deps $(DICTIONARY_PCM)
 	$(CXX) $(LDFLAGS) -o "$@" $(filter %.o,$^) $(MCDST_LINK) $(LINK_LIBS)
 
-test: converter_tests
+converter_validation_tests: $(CORE_OBJECTS) $(BUILD_DIR)/converter_validation_tests.o $(MCDST_OBJECTS) $(MCDST_DEPENDENCY) Makefile | check-deps $(DICTIONARY_PCM)
+	$(CXX) $(LDFLAGS) -o "$@" $(filter %.o,$^) $(MCDST_LINK) $(LINK_LIBS)
+
+test: converter_tests converter_validation_tests
 	./converter_tests
+	./converter_validation_tests
 
 # Standalone postprocessor: deliberately does not link the converter implementation.
 mcdst_lab: $(BUILD_DIR)/McDstLab.o $(BUILD_DIR)/mcdst_lab.o $(MCDST_OBJECTS) $(MCDST_DEPENDENCY) Makefile | check-deps $(DICTIONARY_PCM)
@@ -65,6 +69,9 @@ $(BUILD_DIR)/%.o: src/%.cpp Makefile $(MCDST_HEADERS) | check-deps $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(PROJECT_CPPFLAGS) $(CXXFLAGS) $(COMPILE_FLAGS) -c "$<" -o "$@"
 
 $(BUILD_DIR)/converter_tests.o: tests/converter_tests.cpp Makefile $(MCDST_HEADERS) | check-deps $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(PROJECT_CPPFLAGS) $(CXXFLAGS) $(COMPILE_FLAGS) -c "$<" -o "$@"
+
+$(BUILD_DIR)/converter_validation_tests.o: tests/converter_validation_tests.cpp Makefile $(MCDST_HEADERS) | check-deps $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(PROJECT_CPPFLAGS) $(CXXFLAGS) $(COMPILE_FLAGS) -c "$<" -o "$@"
 
 ifeq ($(strip $(MCDST_LIBRARY)),)
@@ -97,7 +104,7 @@ profile:
 
 clean:
 	rm -rf -- "$(BUILD_DIR)"
-	rm -f -- "$(TARGET)" converter_tests "$(DICTIONARY_NAME)_rdict.pcm"
+	rm -f -- "$(TARGET)" converter_tests converter_validation_tests "$(DICTIONARY_NAME)_rdict.pcm"
 	rm -f -- mcdst_lab mcdst_lab_tests
 
 distclean: clean
@@ -112,4 +119,5 @@ help:
 	@echo "Set ROOT_CONFIG and ROOTCLING if ROOT is outside PATH."
 
 -include $(CORE_OBJECTS:.o=.d) $(BUILD_DIR)/converter.d $(BUILD_DIR)/converter_tests.d $(MCDST_OBJECTS:.o=.d)
+-include $(BUILD_DIR)/converter_validation_tests.d
 -include $(BUILD_DIR)/McDstLab.d $(BUILD_DIR)/mcdst_lab.d $(BUILD_DIR)/mcdst_lab_tests.d

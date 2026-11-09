@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 bool OscarConverter::Convert(const std::string& inputFilename, const std::string& outputFilename,
                              const ConversionOptions& options) {
@@ -75,6 +76,9 @@ bool OscarConverter::Convert(const std::string& inputFilename, const std::string
             throw std::runtime_error("cannot create McDst branches");
         eventBranch->SetAutoDelete(kFALSE);
         particleBranch->SetAutoDelete(kFALSE);
+        std::vector<int> sourceIds;
+        if (options.record_source_ids && !tree->Branch("SourceId", &sourceIds))
+            throw std::runtime_error("cannot create SourceId branch");
 
         // Reuse the event object; only its number and impact parameter change.
         auto* event = new (events[0]) McEvent();
@@ -137,6 +141,8 @@ bool OscarConverter::Convert(const std::string& inputFilename, const std::string
                     const int idx = particles.GetEntriesFast();
                     new (particles[idx]) McParticle(idx, p.pdg, 0, 0, 0, -1, 0, child, p.px, p.py,
                                                     p.pz, p.p0, p.x, p.y, p.z, p.t);
+                    if (options.record_source_ids)
+                        sourceIds.push_back(id);
                     found->second.written = true;
                     continue;
                 }
@@ -185,6 +191,7 @@ bool OscarConverter::Convert(const std::string& inputFilename, const std::string
                 eventEnsemble = ensemble;
                 buffer.clear();
                 particles.Delete();
+                sourceIds.clear();
                 if (static_cast<std::size_t>(count) > buffer.bucket_count())
                     buffer.reserve(count);
                 remainingParticles = count;
