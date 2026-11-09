@@ -1,31 +1,37 @@
-#include <iostream>
 #include "OscarConverter.h"
 #include "RootConverter.h"
 
+#include <iostream>
+#include <string>
+#include <vector>
+
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <input.oscar> <output.mcDst.root>" << std::endl;
+    ConversionOptions options;
+    bool root_input = false;
+    std::vector<std::string> filenames;
+    for (int i = 1; i < argc; ++i) {
+        const std::string argument(argv[i]);
+        if (argument == "--help" || argument == "-h") {
+            std::cout << "Usage: " << argv[0]
+                      << " [--keep-empty] [--root] <input> <output.McDst.root>\n";
+            return 0;
+        }
+        if (argument == "--keep-empty")
+            options.keep_empty_events = true;
+        else if (argument == "--root")
+            root_input = true;
+        else if (!argument.empty() && argument.front() == '-') {
+            std::cerr << "Unknown option: " << argument << '\n';
+            return 1;
+        } else
+            filenames.push_back(argument);
+    }
+    if (filenames.size() != 2 || (root_input && options.keep_empty_events)) {
+        std::cerr << "Usage: " << argv[0]
+                  << " [--keep-empty] [--root] <input> <output.McDst.root>\n";
         return 1;
     }
-    
-    OscarConverter converter;
-    bool success = converter.Convert(argv[1], argv[2]);
-    
-    if (!success) {
-        std::cerr << "Conversion failed!" << std::endl;
-        return 2;
-    }
-    
-    std::cout << "Conversion completed successfully." << std::endl;
-    return 0;
-
-    // ===== Для конвертации .root -> .mcDst.root ======
-    // if (argc != 3) {
-    //     std::cerr << "Usage: " << argv[0] << " <input.root> <output.mcDst.root>" << std::endl;
-    //     return 1;
-    // }
-
-    // ConvertRootToMcDst(argv[1], argv[2]);
-
-    // return 0;
+    const bool success = root_input ? ConvertRootToMcDst(filenames[0], filenames[1])
+                                    : OscarConverter().Convert(filenames[0], filenames[1], options);
+    return success ? 0 : 2;
 }

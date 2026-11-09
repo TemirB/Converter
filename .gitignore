@@ -4,7 +4,15 @@ build_profile
 
 converter
 converter_profile
+converter_tests
+mcdst_lab
+.cache
+mcdst_lab_tests
+.make/
+.make_profile/
+G__ConverterMcDst*_rdict.pcm
 *.root
 *.oscar
 *.txt
+!CMakeLists.txt
 *.out

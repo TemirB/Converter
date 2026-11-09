@@ -1,414 +1,258 @@
 #include "OscarConverter.h"
 #include "Particle.h"
-#include "Mode.h"
 
-#include <fstream>
-#include <iostream>
-#include <sstream>
-#include <unordered_map>
-#include <memory>
-
-#include "TFile.h"
-#include "TTree.h"
-#include "TClonesArray.h"
-
-#include "McRun.h"
 #include "McEvent.h"
 #include "McParticle.h"
-#include "McArrays.h"
+#include "McRun.h"
+#include "TClonesArray.h"
+#include "TFile.h"
+#include "TTree.h"
 
-// Кол-во начальных частиц
-// Далее по нему будет определяться является ли частица начальной
-int kInitNucl = 394;
+#include <cerrno>
+#include <charconv>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <locale>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+#include <string_view>
+#include <unistd.h>
+#include <unordered_map>
+#include <utility>
 
-// Хелпер для записи события
-void processEvent(
-    TClonesArray* arrays[McArrays::NAllMcArrays],
-    std::unordered_map<int, Particle> out,
-    double impactParameter, int evNum, int nPart
-) {
-    // [Future] Можно из interaction поддерживать сбор child
-    int child[2] = {-1, 1};
-    int idx = 0;
+bool OscarConverter::Convert(const std::string& inputFilename, const std::string& outputFilename,
+                             const ConversionOptions& options) {
+    constexpr int kInitialParticles = 394;
+    constexpr int kMaxParticles = std::numeric_limits<unsigned short>::max();
+    constexpr std::string_view kWhitespace = " \t\r\n\f\v";
+    enum class Mode { Idle, Initial, History, Final, Skip };
+    struct BufferedParticle {
+        Particle particle;
+        bool written = false;
+    };
 
-    for (const auto & entry : out) {
-        const Particle& part = entry.second;
-        // Use placement new: TClonesArray pre-allocates memory,
-        // and we construct McParticle directly in the next free slot.
-        // arrays[...]->GetEntries() gives the index of that slot,
-        // and operator[] returns a void* to the raw memory location.
-        
-        new((*(arrays[McArrays::Particle]))[arrays[McArrays::Particle]->GetEntries()]) McParticle(
-            idx++, part.pdg, 0, 0, 0, -1, 0, child,
-            part.px, part.py, part.pz, part.p0,
-            part.x, part.y, part.z, part.t
-        );
-    }
+    std::string temporaryFilename;
+    std::size_t lineNumber = 0;
+    try {
+        std::ifstream input(inputFilename);
+        if (!input)
+            throw std::runtime_error("cannot open input: " + inputFilename);
+        if (outputFilename.empty() || std::filesystem::is_directory(outputFilename))
+            throw std::runtime_error("output must be a file path");
+        if (std::filesystem::exists(outputFilename) &&
+            std::filesystem::equivalent(inputFilename, outputFilename))
+            throw std::runtime_error("input and output must be different files");
 
-    McEvent* event = new((*(arrays[McArrays::Event]))[arrays[McArrays::Event]->GetEntries()]) McEvent();
+        std::string temporaryName = outputFilename + ".tmp.XXXXXX";
+        const int descriptor = mkstemp(temporaryName.data());
+        if (descriptor < 0)
+            throw std::runtime_error("cannot create output beside " + outputFilename + ": " +
+                                     std::strerror(errno));
+        temporaryFilename = std::move(temporaryName);
+        if (close(descriptor) != 0)
+            throw std::runtime_error("cannot close temporary output: " +
+                                     std::string(std::strerror(errno)));
 
-    event->setEventNr(evNum);
-    event->setB(impactParameter);
-    event->setNpart(nPart);
-    event->setPhi(0.);
-    event->setNes(1);
-    event->setComment("");
-    event->setStepNr(1);
-    event->setStepT(200.);
-}
+        std::unique_ptr<TFile> outputFile(
+            TFile::Open(temporaryFilename.c_str(), "RECREATE", "Oscar to McDst"));
+        if (!outputFile || outputFile->IsZombie())
+            throw std::runtime_error("cannot create output file: " + outputFilename);
+        outputFile->SetCompressionLevel(1);
+        TClonesArray events("McEvent", 1), particles("McParticle", 1000);
+        auto tree = std::make_unique<TTree>("McDst", "Converted Oscar Data");
+        tree->SetDirectory(outputFile.get());
+        TClonesArray* eventArray = &events;
+        TClonesArray* particleArray = &particles;
+        auto* eventBranch = tree->Branch("Event", &eventArray, 65536, 99);
+        auto* particleBranch = tree->Branch("Particle", &particleArray, 65536, 99);
+        if (!eventBranch || !particleBranch)
+            throw std::runtime_error("cannot create McDst branches");
+        eventBranch->SetAutoDelete(kFALSE);
+        particleBranch->SetAutoDelete(kFALSE);
 
-// Перписаный конвертер:
-// С прошлой версии поменял условие отбора спектатора.
-// А также перенес обработку out-end блока в разбор end строчки,
-// чтобы логически отделить код записи в буферы и записи в 
-bool OscarConverter::Convert(const std::string& nInput, const std::string& nOutput) {
-    // Создание входного файла и проверка, что он создался
-    TFile* output = TFile::Open(nOutput.c_str(), "RECREATE", "Oscar to McDst");
-    if (!output || output->IsZombie()) {
-        std::cerr << "Cannot create output file: " << nOutput << std::endl;
-        return false;
-    }
-    
-    // Вроде как эта строка оптимизирует сжимаемость
-    // Должно быть полезно, при обработке большого кол-ва файлов
-    output->SetCompressionLevel(1);
+        // Reuse the event object; only its number and impact parameter change.
+        auto* event = new (events[0]) McEvent();
+        event->setNes(1);
+        event->setStepNr(1);
+        event->setStepT(200.);
+        int child[2] = {-1, -1};
+        std::unordered_map<int, BufferedParticle> buffer;
+        buffer.reserve(kInitialParticles);
+        Mode mode = Mode::Idle;
+        int eventNumber = -1, eventEnsemble = 0, remainingParticles = 0;
+        std::string line, marker, kind, phase, key;
+        std::istringstream fields;
+        fields.imbue(std::locale::classic());
 
-    // Создаем McDst дерево
-    TTree* tree = new TTree("McDst", "Converted Oscar Data");
-    TClonesArray* arrays[McArrays::NAllMcArrays];
-
-    // Иннициализируем базовые массивы
-    for (unsigned int i = 0; i < McArrays::NAllMcArrays; i++) {
-        arrays[i] = new TClonesArray(McArrays::mcArrayTypes[i], McArrays::mcArraySizes[i]);
-        arrays[i]->SetOwner(kFALSE);
-        auto br = tree->Branch(McArrays::mcArrayNames[i], &arrays[i], 65536, 99);
-        if (br) br->SetAutoDelete(kFALSE);
-    }
-
-    // Открываем входной файл
-    std::ifstream input(nInput);
-    if (!input.is_open()) {
-        std::cerr << "Cannot open input file: " << nInput << std::endl;
-        return false;
-    }
-
-    // Общие параметры события
-    // - isElastic = флаг события, определяющий является ли оно упругим
-    // - evNum = номер события
-    // - nPart = кол-во частиц в событии, используется для проверки события на упругость
-    bool isElastic = false;
-
-    int evNum = -1;
-    int nPart = -1;
-
-    // [Future] Параметры взаимодействия
-    // - iIn = кол-во входных частиц
-    // - iOut = кол-во выходных частиц 
-    // int iIn = -1;
-    // int iOut = -1;
-
-    // Буферы
-    // - interaction = буфер частиц из взаимодействий
-    //                 отслеживает все уникальные частицы из каждого взаимодействия
-    //                 отчистка происходит в момент завершения всего события
-    // - out = буфер частиц, доживших до 200 fm/c
-    //         основной буфер для записи в дерево
-    //         отчистка происходит в момент завершения всего события
-    std::unordered_map<int, Particle> interactions;
-    std::unordered_map<int, Particle> out;
-
-    // Основной принцип работы программы
-    // - mode = содержит в себе текущий режим работы программы,
-    //          меняется в зависимости от ключевого слова:
-    //          - # interaction -> Mode::Interaction 
-    //              Режим записи в буфер interation
-    //          - # ... in -> Mode::InEvent
-    //              Вероятно лишний режим работы, но влияния на корректность и производительность не должно быть, 
-    //              пока оставляю, после валидации нужно будет убрать
-    //          - # ... out -> Mode::OutEvent 
-    //              Режим записи частиц в буфер out, поддерживая уникальность каждого ID, 
-    //              посредством записи только последней частицы с этим ID,
-    //              а также проверяем, является ли событие упругим
-    //          - # ... end -> Mode::EndEvent 
-    //              По сути тоже лишний режим (перенос обработки в парсинг облегчает логику)
-    //              Режим обработки, проставляем в out спектаторы и записываем частицы из out в McDst массивы.
-    Mode mode = Mode::Init;
-    
-    std::string line;
-
-    while (std::getline(input, line)) {
-        if (line.empty()) continue;
-
-        std::istringstream iss(line);
-
-        // Разбираем по словам комментарий:
-        // # ...
-        if (line[0] == '#') {
-            std::string interaction, dummy, keyWord;
-
-            // Поиск первых слов:
-            iss >> dummy >> dummy;
-            //       #      event
-            //       #   interaction
-            if (dummy == "interaction") {
-                // Поиск кол-ва частиц в взаимодействии
-                // [Future] можно будет поддерживать child, etc
-                // iss >> dummy >> iIn >> dummy >> iOut;
-                //      in       2      out      2  ... (rho    0.0000000 weight     39.71011 partial   39.7101111 type     1)
-                mode = Mode::Interaction;
-            } else if (dummy == "event") {
-                // Поиск ключевых слов
-                iss >> evNum >> keyWord >> nPart;
-                //       0        in        394
-                //       0        out       421
-                //       0        end        0
-                if (keyWord == "in") {
-                    mode = Mode::InEvent;
-                    // [OUTDATED] Не нужный режим работы
-                } else if (keyWord == "out") {
-                    mode = Mode::OutEvent;
-
-                    if (nPart == kInitNucl) {
-                        mode = Mode::SkipEvent;
-                        isElastic = true;
-                    }
-                } else if (keyWord == "end") {
-                    mode = Mode::EndEvent;
-
-                    double impactParameter = -1.;
-
-                    iss >> dummy >> impactParameter >>             dummy       >> dummy; 
-                    //    impact        11.095         scattering_projectile_target yes
-
-                    // scattering_projectile_target - показывает упругость события,
-                    // yes - событие было, новые частицы родились
-                    // no - небыло новых частиц кроме начальных = упругое событие
-                    if (isElastic && dummy == "no") {
-                        impactParameter = -1.;
-                    }
-
-                    if (!isElastic) {
-                        processEvent(arrays, out, impactParameter, evNum, nPart);
-                        tree->Fill();
-                    }
-
-                    // clear
-                    interactions.clear();
-                    out.clear();
-                    for (unsigned int i = 0; i < McArrays::NAllMcArrays; i++) arrays[i]->Clear();
-                    isElastic = false;
-                } else {
-                    mode = Mode::SkipEvent;
-                }
-            }
-            // Распарсили строку, переходим дальше
-            // Или это сервисный комментарий
-            continue;
-        }
-
-        if (mode == Mode::SkipEvent) continue;
-
-        // Тут и до конца цикла происходит только запись частиц в буферы
-        Particle p = Particle();
-        iss >> p.t >> p.x >> p.y >> p.z
-            >> p.mass >> p.p0 >> p.px >> p.py >> p.pz
-            >> p.pdg >> p.ID >> p.charge;
-
-        switch (mode) {
-            case Mode::Interaction:
-                // Если частица встретилась в interation, а также явлется начальной
-                // Проставляем ей флаг учаcтника взаимодействия,
-                // что далее позволит отделить её от спектаторов
-                // [OUTDATED] поле не нужно поскольку, логику можно упростить, см. блок OutEvent
-                // if (p.ID < kInitNucl) {
-                //     p.participant = true;
-                // }
-                // Также в любом случае записываем её в буфер interation,
-                // Поддерживая уникальность по ID
-                interactions[p.ID] = p;
-
-                break;
-            case Mode::OutEvent:
-                // Пропускаем частицы упругого события,
-                // так как оно не имеет для нас физического смысла
-                if (isElastic) continue;
-
-                // Если частица 
-                // не появилась во взаимодействиях И является начальной - это спектатор 
-                if (interactions.find(p.ID) == interactions.end() && p.ID < kInitNucl) {
-                    p.SetSpectator();
-                    out[p.ID] = p;
-                    continue;
-                }
-
-                // Если частица не является начальной и при этом дожила до момента 200 fm/c, 
-                // то это означает, что она была ранее записана в interactions
-                // Тогда мы просто обновляем её координаты на freezout
-                out[p.ID] = interactions[p.ID];
-                
-                break;
-            default:
-                break;
-        }
-    }
-
-
-    McRun run("SMASH", "Converted from Oscar file",
-              0, 0, 0., 0, 0, 0.,
-              0., 0., -1, 0, 0, 0., tree->GetEntries());
-    run.Write();
-
-    std::cout << "Conversion completed. Total events: " << tree->GetEntries() << std::endl;
-
-    output->Write();
-    output->Close();
-
-    return true;
-}
-
-
-// [OUTDATED]
-bool oldConvert(const std::string& inputFilename, const std::string& outputFilename) {
-    TFile* outputFile = TFile::Open(outputFilename.c_str(), "RECREATE", "Oscar to McDst");
-    if (!outputFile || outputFile->IsZombie()) {
-        std::cerr << "Cannot create output file: " << outputFilename << std::endl;
-        return false;
-    }
-    outputFile->SetCompressionLevel(1);
-
-    TTree* tree = new TTree("McDst", "Converted Oscar Data");
-    TClonesArray* arrays[McArrays::NAllMcArrays];
-
-    for (unsigned int i = 0; i < McArrays::NAllMcArrays; i++) {
-        arrays[i] = new TClonesArray(McArrays::mcArrayTypes[i], McArrays::mcArraySizes[i]);
-        arrays[i]->SetOwner(kFALSE);
-        auto br = tree->Branch(McArrays::mcArrayNames[i], &arrays[i], 65536, 99);
-        if (br) br->SetAutoDelete(kFALSE);
-    }
-
-    std::ifstream infile(inputFilename);
-    if (!infile.is_open()) {
-        std::cerr << "Cannot open input file: " << inputFilename << std::endl;
-        return false;
-    }
-
-    bool isElastic = false;
-    int ev_num = -1;
-    double n_part = -1;
-    Mode mode = Mode::Init;
-    int startParticlesNum = 394;
-
-    double timpactParameter = -1.;
-
-    std::unordered_map<int, Particle> buffer;
-    std::unordered_map<int, Particle> endBuffer;
-    std::unordered_map<int, Particle> eventBuffer;
-
-    std::string line;
-    while (std::getline(infile, line)) {
-        if (line.empty()) continue;
-
-        std::istringstream iss(line);
-
-        if (line[0] == '#') {
-            std::string interaction, dummy, keyWord;
-            iss >> dummy >> dummy >> ev_num >> keyWord >> n_part;
-            //       #      event       0       in          394
-            if (dummy == "interaction") {
-                mode = Mode::Interaction;
+        while (std::getline(input, line)) {
+            ++lineNumber;
+            const auto start = line.find_first_not_of(kWhitespace);
+            if (start == std::string::npos)
                 continue;
-            } else if (dummy == "event") {
-                if (keyWord == "in") {
-                    mode = Mode::InEvent;
-                    isElastic = false;
 
-                    buffer.clear();
-                    endBuffer.clear();
-                    eventBuffer.clear();
-                    for (unsigned int i = 0; i < McArrays::NAllMcArrays; i++) arrays[i]->Clear();
+            if (line[start] != '#') {
+                if (mode == Mode::Idle)
+                    throw std::runtime_error("particle outside an active event");
+                if (mode != Mode::History) {
+                    if (remainingParticles == 0)
+                        throw std::runtime_error("particle block exceeds its declared count");
+                    --remainingParticles;
+                }
+                if (mode == Mode::Skip)
                     continue;
-                } else if (keyWord == "out") {
-                    mode = (int(n_part) == startParticlesNum) ? Mode::SkipEvent : Mode::OutEvent;
-                    isElastic = (mode == Mode::SkipEvent);
-                    continue;
-                } else if (keyWord == "end") {
-                    mode = Mode::EndEvent;
-                    timpactParameter = n_part;
-                    if (isElastic) {
-                        timpactParameter = -1.;
-                        continue;
+                if (mode == Mode::Final) {
+                    // Verify 12 columns, converting only the ID from the final list.
+                    std::string_view remainingFields(line), idToken;
+                    for (int column = 0; column < 12; ++column) {
+                        const auto begin = remainingFields.find_first_not_of(kWhitespace);
+                        if (begin == std::string_view::npos)
+                            throw std::runtime_error("invalid final particle record");
+                        remainingFields.remove_prefix(begin);
+                        const auto end = remainingFields.find_first_of(kWhitespace);
+                        if (column == 10)
+                            idToken = remainingFields.substr(0, end);
+                        remainingFields.remove_prefix(
+                            end == std::string_view::npos ? remainingFields.size() : end);
                     }
-                } else {
-                    mode = Mode::SkipEvent;
+                    if (idToken.front() == '+')
+                        idToken.remove_prefix(1);
+                    int id = -1;
+                    const auto result =
+                        std::from_chars(idToken.data(), idToken.data() + idToken.size(), id);
+                    if (result.ec != std::errc{} || result.ptr != idToken.data() + idToken.size())
+                        throw std::runtime_error("invalid final particle record");
+
+                    const auto found = buffer.find(id);
+                    if (found == buffer.end() || found->second.written)
+                        continue;
+                    Particle& p = found->second.particle;
+                    if (id < kInitialParticles)
+                        p.t = p.x = p.y = p.z = -999.;
+                    const int idx = particles.GetEntriesFast();
+                    new (particles[idx]) McParticle(idx, p.pdg, 0, 0, 0, -1, 0, child, p.px, p.py,
+                                                    p.pz, p.p0, p.x, p.y, p.z, p.t);
+                    found->second.written = true;
                     continue;
                 }
-            }
-        }
 
-        if (mode == Mode::SkipEvent) continue;
-
-        double t, x, y, z, mass, p0, px, py, pz;
-        int pdg, ID, charge;
-        iss >> t >> x >> y >> z >> mass >> p0 >> px >> py >> pz >> pdg >> ID >> charge;
-        Particle p(t, x, y, z, mass, p0, px, py, pz, pdg, ID, charge);
-
-        if (mode == Mode::Interaction || mode == Mode::InEvent) {
-            if (ID < 394) p.participant = true;
-            buffer[ID] = p;
-        } else if (mode == Mode::OutEvent) {
-            if (isElastic) continue;
-            endBuffer[ID] = p;
-        } else if (mode == Mode::EndEvent) {
-            for (const auto& entry : buffer) {
-                int id = entry.first;
-                const Particle& initParticle = entry.second;
-
-                if (endBuffer.find(id) == endBuffer.end()) continue;
-
-                if (!initParticle.participant && initParticle.ID < 394) {
-                    Particle specParticle = initParticle;
-                    specParticle.SetSpectator();
-                    eventBuffer[id] = specParticle;
-                } else {
-                    eventBuffer[id] = initParticle;
+                fields.clear();
+                fields.str(line);
+                Particle p;
+                if (!(fields >> p.t >> p.x >> p.y >> p.z >> p.mass >> p.p0 >> p.px >> p.py >>
+                      p.pz >> p.pdg >> p.id >> p.charge))
+                    throw std::runtime_error("invalid OSCAR particle record");
+                for (double value : {p.t, p.x, p.y, p.z, p.mass, p.p0, p.px, p.py, p.pz}) {
+                    if (!std::isfinite(value))
+                        throw std::runtime_error("non-finite particle value");
                 }
+                buffer.insert_or_assign(p.id, BufferedParticle{p, false});
+                continue;
             }
 
-            int child[2] = {-1, -1};
-            int idx = 0;
-            for (const auto& entry : eventBuffer) {
-                const Particle& p1 = entry.second;
-                new((*(arrays[McArrays::Particle]))[arrays[McArrays::Particle]->GetEntries()])
-                McParticle(idx++, p1.pdg, 0, 0, 0, -1, 0, child,
-                          p1.px, p1.py, p1.pz, p1.p0,
-                          p1.x, p1.y, p1.z, p1.t);
+            fields.clear();
+            fields.str(line);
+            if (!(fields >> marker >> kind) || marker != "#" ||
+                (kind != "event" && kind != "interaction"))
+                continue;
+            if (remainingParticles != 0)
+                throw std::runtime_error("particle block ended before its declared count");
+            const bool finalSeen = mode == Mode::Final || mode == Mode::Skip;
+            if (kind == "interaction") {
+                if (mode == Mode::Idle || finalSeen)
+                    throw std::runtime_error("interaction outside an active event");
+                mode = Mode::History;
+                continue;
             }
 
-            McEvent* event = new((*(arrays[McArrays::Event]))[arrays[McArrays::Event]->GetEntries()]) McEvent();
-            event->setEventNr(ev_num);
-            event->setB(timpactParameter);
-            event->setPhi(0.);
-            event->setNes(1);
-            event->setComment("");
-            event->setStepNr(1);
-            event->setStepT(200.);
+            int number = -1, ensemble = 0, count = -1;
+            if (!(fields >> number >> phase) || number < 0)
+                throw std::runtime_error("invalid event header");
+            if (phase == "ensemble" && (!(fields >> ensemble >> phase) || ensemble < 0))
+                throw std::runtime_error("invalid ensemble header");
+            if (!(fields >> count) || count < 0 || count > kMaxParticles)
+                throw std::runtime_error("invalid event particle count");
 
-            tree->Fill();
-            buffer.clear();
-            endBuffer.clear();
-            eventBuffer.clear();
+            if (phase == "in") {
+                if (mode != Mode::Idle)
+                    throw std::runtime_error("new event before previous end");
+                eventNumber = number;
+                eventEnsemble = ensemble;
+                buffer.clear();
+                particles.Delete();
+                if (static_cast<std::size_t>(count) > buffer.bucket_count())
+                    buffer.reserve(count);
+                remainingParticles = count;
+                mode = Mode::Initial;
+                continue;
+            }
+            if (mode == Mode::Idle || number != eventNumber || ensemble != eventEnsemble)
+                throw std::runtime_error("event/ensemble header does not match active event");
+            if (phase == "out") {
+                if (finalSeen)
+                    throw std::runtime_error("duplicate final particle block");
+                remainingParticles = count;
+                mode = count == kInitialParticles && !options.keep_empty_events ? Mode::Skip
+                                                                                : Mode::Final;
+                continue;
+            }
+            if (phase != "end")
+                throw std::runtime_error("unknown event phase");
+            if (!finalSeen)
+                throw std::runtime_error("missing final particle block");
+            double impactParameter = -1.;
+            if (!(fields >> key >> impactParameter) || key != "impact" ||
+                !std::isfinite(impactParameter) || impactParameter < 0.)
+                throw std::runtime_error("invalid impact parameter");
+
+            const bool skip = mode == Mode::Skip;
+            mode = Mode::Idle;
+            if (skip)
+                continue;
+            event->setEventNr(eventNumber);
+            event->setB(impactParameter);
+            if (tree->Fill() < 0 || outputFile->TestBit(TFile::kWriteError))
+                throw std::runtime_error("failed to write event");
         }
+        if (input.bad())
+            throw std::runtime_error("input read failed");
+        if (mode != Mode::Idle)
+            throw std::runtime_error("EOF before event end");
+
+        outputFile->cd();
+        const auto entries = tree->GetEntries();
+        const int runCount =
+            entries <= std::numeric_limits<int>::max() ? static_cast<int>(entries) : 0;
+        McRun run("SMASH", "Converted from Oscar file", 0, 0, 0., 0, 0, 0., 0., 0., -1, 0., 0., 0.,
+                  runCount);
+        if (run.Write() <= 0 || outputFile->Write() <= 0 || outputFile->TestBit(TFile::kWriteError))
+            throw std::runtime_error("failed to finalize ROOT output");
+        tree.reset();
+        outputFile->Close();
+        if (outputFile->TestBit(TFile::kWriteError))
+            throw std::runtime_error("failed to close ROOT output");
+        outputFile.reset();
+        std::error_code error;
+        std::filesystem::rename(temporaryFilename, outputFilename, error);
+        if (error)
+            throw std::runtime_error("cannot replace output: " + error.message());
+        temporaryFilename.clear();
+        std::cout << "Conversion completed. Total events: " << entries << '\n';
+        return true;
+    } catch (const std::exception& error) {
+        if (!temporaryFilename.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove(temporaryFilename, ignored);
+        }
+        std::cerr << "Conversion failed: ";
+        if (lineNumber != 0)
+            std::cerr << "line " << lineNumber << ": ";
+        std::cerr << error.what() << '\n';
+        return false;
     }
-
-    McRun run("SMASH", "Converted from Oscar file",
-              0, 0, 0., 0, 0, 0.,
-              0., 0., -1, 0, 0, 0., tree->GetEntries());
-    run.Write();
-
-    std::cout << "Conversion completed. Total events: " << tree->GetEntries() << std::endl;
-
-    outputFile->Write();
-    outputFile->Close();
-
-    return true;
 }
