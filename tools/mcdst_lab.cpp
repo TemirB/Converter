@@ -26,7 +26,7 @@ void Usage() {
                  "  --eta-max value      Plot range [-value,value] (default 6)\n"
                  "  --pt-max GeV         Plot range [0,value] (default 3)\n"
                  "Processes .root files directly in INPUT_DIRECTORY (not recursive).\n"
-                 "Creates OUTPUT_DIRECTORY; writes <name>.McDst.root with McDst/Event/Particle.\n"
+                 "Creates OUTPUT_DIRECTORY; writes <name>.mcDst.root with McDst/Event/Particle.\n"
                  "Input must be in SMASH CM axes (Projectile +z, Target -z).\n"
                  "Output: Target rest, +z opposite Projectile; no particle/event cuts.\n"
                  "FXT multiplicity: known charged particles, -2 < eta_lab < 0, pT > 0.15 GeV/c.\n"

@@ -120,7 +120,7 @@ void DrawClasses(const Calibration& calibration, const PlotData& data, TLegend& 
 } // namespace fxt_plot
 
 // Uses the whole calibration sample, even when invoked on just one output file.
-// root -l -b -q 'scripts/plot_fxt.C("lab_files/sample.McDst.root","fxt_multi")'
+// root -l -b -q 'scripts/plot_fxt.C("lab_files/sample.mcDst.root","fxt_multi")'
 void plot_fxt(const char* input, const char* prefix = "fxt_multi") {
     TFile file(input, "READ");
     const auto calibration = fxt_plot::ReadCalibration(file);

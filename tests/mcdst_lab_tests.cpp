@@ -633,12 +633,17 @@ int main(int argc, char** argv) {
                                                   (temp.path / "batch-out").string(), {}, 8);
         Check(report.workers == 3 && report.succeeded == 3 && report.failed == 0,
               "parallel directory scheduling failed");
-        CheckTransformed(input, temp.path / "batch-out/a.McDst.root");
-        CheckTransformed(input, temp.path / "batch-out/b.McDst.root");
-        CheckTransformed(input, temp.path / "batch-out/c.McDst.root");
-        Check(!fs::exists(temp.path / "batch-out/b.McDst.McDst.root"),
+        CheckTransformed(input, temp.path / "batch-out/a.mcDst.root");
+        CheckTransformed(input, temp.path / "batch-out/b.mcDst.root");
+        CheckTransformed(input, temp.path / "batch-out/c.mcDst.root");
+        Check(!fs::exists(temp.path / "batch-out/b.mcDst.mcDst.root"),
               "McDst suffix was duplicated");
         Check(!fs::exists(temp.path / "batch-out/ignore.dat"), "unexpected non-ROOT output");
+        for (const auto& file : fs::directory_iterator(temp.path / "batch-out")) {
+            const auto name = file.path().filename().string();
+            Check(name == "a.mcDst.root" || name == "b.mcDst.root" || name == "c.mcDst.root",
+                  "output suffix has incorrect letter case");
+        }
         fs::copy_file(bad_input, temp.path / "batch/bad.root");
         report = mcdst_lab::ProcessDirectory((temp.path / "batch").string(),
                                              (temp.path / "batch-hist").string(), hist_only, 0);
