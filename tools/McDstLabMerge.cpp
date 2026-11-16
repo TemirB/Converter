@@ -241,10 +241,10 @@ void MergeLocalObjects(const std::vector<fs::path>& paths, const std::string& ou
     Require(merger.PartialMerge(TFileMerger::kAll | TFileMerger::kOnlyListed |
                                 TFileMerger::kKeepCompression),
             "ROOT failed to merge input files");
-    // Some ROOT versions close the output inside PartialMerge(kRegular).
+    // PartialMerge may close the output; otherwise the merger destructor closes it
+    // before the caller reopens it. This also works with ROOT 6.28.
     if (auto* file = merger.GetOutputFile()) {
         Require(!file->TestBit(TFile::kWriteError), "ROOT merge write error");
-        merger.CloseOutputFile();
     }
 }
 
