@@ -43,7 +43,11 @@ target_link_libraries(converter_core PUBLIC converter_mcdst ROOT::Core ROOT::RIO
 add_executable(converter src/converter.cpp)
 target_link_libraries(converter PRIVATE converter_core)
 
-add_library(mcdst_lab_core STATIC tools/McDstLab.cpp)
+add_library(mcdst_lab_core STATIC
+    tools/McDstLab.cpp
+    tools/McDstLabIO.cpp
+    tools/McDstLabCentrality.cpp
+    tools/McDstLabBatch.cpp)
 target_include_directories(mcdst_lab_core PUBLIC tools)
 target_compile_options(mcdst_lab_core PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(mcdst_lab_core PUBLIC converter_mcdst ROOT::Core ROOT::RIO ROOT::Tree ROOT::Hist ROOT::Physics ROOT::EG)

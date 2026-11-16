@@ -7,6 +7,15 @@
 #include <vector>
 
 namespace {
+
+struct CommandLine {
+    mcdst_lab::Options options;
+    unsigned threads = 0;
+    std::size_t max_files = 0;
+    std::vector<std::string> paths;
+    bool help = false;
+};
+
 void Usage() {
     std::cout << "Usage: mcdst_lab [options] INPUT_DIRECTORY OUTPUT_DIRECTORY\n"
                  "  --threads N|all      Workers across files (default all hardware threads)\n"
@@ -20,92 +29,125 @@ void Usage() {
                  "Creates OUTPUT_DIRECTORY; writes <name>.McDst.root with McDst/Event/Particle.\n"
                  "Input must be in SMASH CM axes (Projectile +z, Target -z).\n"
                  "Output: Target rest, +z opposite Projectile; no particle/event cuts.\n"
+                 "FXT multiplicity: known charged particles, -2 < eta_lab < 0, pT > 0.15 GeV/c.\n"
+                 "Centrality: 0-10, 10-30, 30-50, 50-80% of the shared right-tail event integral.\n"
+                 "Equal FXT multiplicities stay together; NFxt=0 events are included.\n"
                  "An existing output is replaced only after success.\n";
 }
+
+std::string NextValue(int& index, int argc, char** argv, const std::string& option) {
+    if (++index == argc) {
+        throw std::runtime_error("missing value for " + option);
+    }
+    return argv[index];
+}
+
+bool IsUnsignedInteger(const std::string& text) {
+    return !text.empty() && text.find_first_not_of("0123456789") == std::string::npos;
+}
+
+unsigned ParseThreads(const std::string& text) {
+    if (text == "all") {
+        return 0;
+    }
+    const char* message = "--threads requires a positive integer or all";
+    if (!IsUnsignedInteger(text)) {
+        throw std::runtime_error(message);
+    }
+    const auto value = std::stoull(text);
+    if (value == 0 || value > std::numeric_limits<unsigned>::max()) {
+        throw std::runtime_error(message);
+    }
+    return static_cast<unsigned>(value);
+}
+
+std::size_t ParseMaxFiles(const std::string& text) {
+    if (!IsUnsignedInteger(text)) {
+        throw std::runtime_error("--max-files requires a non-negative integer");
+    }
+    return std::stoull(text);
+}
+
+double& NumericOption(mcdst_lab::Options& options, const std::string& name) {
+    if (name == "--sqrtsnn") {
+        return options.sqrtsnn;
+    }
+    if (name == "--nucleon-mass") {
+        return options.nucleon_mass;
+    }
+    if (name == "--eta-max") {
+        return options.eta_max;
+    }
+    if (name == "--pt-max") {
+        return options.pt_max;
+    }
+    throw std::runtime_error("unknown option: " + name);
+}
+
+void ParseOption(CommandLine& command, const std::string& name, int& index, int argc, char** argv) {
+    if (name == "--hist-only") {
+        command.options.hist_only = true;
+        return;
+    }
+    if (name == "--threads") {
+        command.threads = ParseThreads(NextValue(index, argc, argv, name));
+        return;
+    }
+    if (name == "--max-files") {
+        command.max_files = ParseMaxFiles(NextValue(index, argc, argv, name));
+        return;
+    }
+
+    double& destination = NumericOption(command.options, name);
+    const auto text = NextValue(index, argc, argv, name);
+    std::size_t end = 0;
+    destination = std::stod(text, &end);
+    if (end != text.size()) {
+        throw std::runtime_error("invalid value for " + name);
+    }
+}
+
+CommandLine ParseArguments(int argc, char** argv) {
+    CommandLine command;
+    bool positional_only = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (!positional_only && (argument == "--help" || argument == "-h")) {
+            command.help = true;
+            return command;
+        }
+        if (!positional_only && argument == "--") {
+            positional_only = true;
+            continue;
+        }
+        if (!positional_only && !argument.empty() && argument.front() == '-') {
+            ParseOption(command, argument, index, argc, argv);
+        } else {
+            command.paths.push_back(argument);
+        }
+    }
+    return command;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
-    mcdst_lab::Options options;
-    unsigned threads = 0;
-    std::size_t max_files = 0; // 0 = все файлы
-    std::vector<std::string> paths;
+    CommandLine command;
     try {
-        bool positional = false;
-        for (int i = 1; i < argc; ++i) {
-            const std::string arg = argv[i];
-            if (!positional && (arg == "--help" || arg == "-h")) {
-                Usage();
-                return 0;
-            }
-            if (!positional && arg == "--") {
-                positional = true;
-                continue;
-            }
-            if (!positional && arg == "--hist-only") {
-                options.hist_only = true;
-                continue;
-            }
-            if (!positional && arg == "--threads") {
-                if (++i == argc)
-                    throw std::runtime_error("missing value for --threads");
-                const std::string count = argv[i];
-                if (count == "all") {
-                    threads = 0;
-                } else {
-                    if (count.empty() || count.find_first_not_of("0123456789") != std::string::npos)
-                        throw std::runtime_error("--threads requires a positive integer or all");
-                    const auto value = std::stoull(count);
-                    if (value == 0 || value > std::numeric_limits<unsigned>::max())
-                        throw std::runtime_error("--threads requires a positive integer or all");
-                    threads = static_cast<unsigned>(value);
-                }
-                continue;
-            }
-            if (!positional && arg == "--max-files") {
-                if (++i == argc)
-                    throw std::runtime_error("missing value for --max-files");
-
-                const std::string count = argv[i];
-
-                if (count.empty() ||
-                    count.find_first_not_of("0123456789") != std::string::npos)
-                    throw std::runtime_error("--max-files requires a non-negative integer");
-
-                max_files = std::stoull(count);
-                continue;
-            }
-            if (!positional && !arg.empty() && arg.front() == '-') {
-                double* value = nullptr;
-                if (arg == "--sqrtsnn")
-                    value = &options.sqrtsnn;
-                else if (arg == "--nucleon-mass")
-                    value = &options.nucleon_mass;
-                else if (arg == "--eta-max")
-                    value = &options.eta_max;
-                else if (arg == "--pt-max")
-                    value = &options.pt_max;
-                else
-                    throw std::runtime_error("unknown option: " + arg);
-                if (++i == argc)
-                    throw std::runtime_error("missing value for " + arg);
-                std::size_t end = 0;
-                *value = std::stod(argv[i], &end);
-                if (end != std::string(argv[i]).size())
-                    throw std::runtime_error("invalid value for " + arg);
-            } else {
-                paths.push_back(arg);
-            }
-        }
-        if (paths.size() != 2) {
-            Usage();
-            return 1;
-        }
+        command = ParseArguments(argc, argv);
     } catch (const std::exception& error) {
         std::cerr << "Argument error: " << error.what() << '\n';
         return 1;
     }
+    if (command.help || command.paths.size() != 2) {
+        Usage();
+        return command.help ? 0 : 1;
+    }
+
     try {
-        const auto result = mcdst_lab::ProcessDirectory(paths[0], paths[1], options, threads, max_files);
+        const auto result =
+            mcdst_lab::ProcessDirectory(command.paths[0], command.paths[1], command.options,
+                                        command.threads, command.max_files);
         return result.failed == 0 ? 0 : 2;
     } catch (const std::exception& error) {
         std::cerr << "Lab processing failed: " << error.what() << '\n';

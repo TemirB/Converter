@@ -11,6 +11,7 @@
 #include <TParameter.h>
 #include <TTree.h>
 
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -248,6 +249,200 @@ void CheckTransformed(const fs::path& input_path, const fs::path& output_path) {
     target->ResetBranchAddresses();
 }
 
+// Construct CM input from specified lab momenta, to exercise the actual boost and cuts.
+struct LabParticle {
+    int pdg;
+    double pt;
+    double eta;
+    double mass;
+};
+void FxtFixture(const fs::path& path, const std::vector<std::vector<LabParticle>>& sample,
+                const mcdst_lab::Options& options = {}) {
+    TFile file(path.c_str(), "RECREATE");
+    TClonesArray particles("McParticle"), events("McEvent");
+    auto* pp = &particles;
+    auto* ep = &events;
+    TTree tree("McDst", "FXT fixture constructed from lab kinematics");
+    tree.Branch("Particle", &pp);
+    tree.Branch("Event", &ep);
+    const mcdst_lab::Frame frame(options);
+    int event_number = 0;
+    for (const auto& list : sample) {
+        particles.Delete();
+        events.Delete();
+        auto* event = new (events[0]) McEvent();
+        event->setEventNr(event_number++);
+        for (const auto& particle : list) {
+            const double pz = particle.pt * std::sinh(particle.eta);
+            const double energy =
+                std::sqrt(particle.mass * particle.mass + particle.pt * particle.pt + pz * pz);
+            const double cm_energy = frame.Energy(energy, pz);
+            const double cm_pz = frame.Longitudinal(energy, pz);
+            const int index = particles.GetEntriesFast();
+            int children[2] = {-1, -1};
+            new (particles[index])
+                McParticle(index, particle.pdg, 0, -1, 0, -1, -1, children, -particle.pt, 0., cm_pz,
+                           cm_energy, -999., -999., -999., -999.);
+        }
+        tree.Fill();
+    }
+    tree.Write();
+}
+
+std::vector<std::vector<LabParticle>> MultiplicitySample(int first, int last) {
+    std::vector<std::vector<LabParticle>> sample;
+    for (int n = first; n < last; ++n)
+        sample.emplace_back(n, LabParticle{211, .5, -1., .138});
+    return sample;
+}
+
+void CheckFxtCuts(const fs::path& directory) {
+    const auto input = directory / "cuts.root", output = directory / "cuts-lab.root";
+    const std::vector<LabParticle> particles = {
+        {2212, 0.5, -1.0, 0.938},   {-211, 0.5, -1.0, 0.138},       {11, 0.5, -1.0, 0.000511},
+        {-13, 0.5, -1.0, 0.106},    {1000010020, 0.5, -1.0, 1.876}, {-1000010020, 0.5, -1.0, 1.876},
+        {2112, 0.5, -1.0, 0.938},   {22, 0.5, -1.0, 0.0},           {987654321, 0.5, -1.0, 0.5},
+        {211, 0.1499, -1.0, 0.138}, {211, 0.1501, -1.0, 0.138},     {211, 0.5, -2.0001, 0.138},
+        {211, 0.5, -1.9999, 0.138}, {211, 0.5, 0.0001, 0.138},      {211, 0.5, -0.0001, 0.138},
+        {2212, 0.0, 0.0, 0.938},
+    };
+    FxtFixture(input, {particles, {}});
+    // Plot ranges deliberately exclude accepted FXT particles.
+    mcdst_lab::Options options;
+    options.eta_max = .1;
+    options.pt_max = .1;
+    mcdst_lab::Process(input.string(), output.string(), options);
+    TFile full(output.c_str(), "READ");
+    auto* tree = Get<TTree>(full, "LabMultiplicity");
+    int fxt = -1, all = 0, charged = 0, unknown = 0;
+    tree->SetBranchAddress("NFxt", &fxt);
+    tree->SetBranchAddress("NAll", &all);
+    tree->SetBranchAddress("NCh", &charged);
+    tree->SetBranchAddress("NUnknownPDG", &unknown);
+    tree->GetEntry(0);
+    Check(fxt == 9 && all == 16 && charged == 11 && unknown == 1,
+          "FXT charge species, lab eta/pT cuts, or plot independence wrong");
+    tree->GetEntry(1);
+    Check(fxt == 0, "empty event lost from FXT multiplicity");
+    tree->ResetBranchAddresses();
+    Near(Get<TH1>(full, "hNFxt")->GetEntries(), 2., 0., "NFxt integral is not event count");
+    options.hist_only = true;
+    const auto qa_path = directory / "cuts-qa.root";
+    mcdst_lab::Process(input.string(), qa_path.string(), options);
+    TFile qa(qa_path.c_str(), "READ");
+    for (const char* name :
+         {"hNFxt", "hFxtCentrality", "hNFxt_0_10", "hNFxt_10_30", "hNFxt_30_50", "hNFxt_50_80"}) {
+        auto* a = Get<TH1>(full, name);
+        auto* b = Get<TH1>(qa, name);
+        for (int bin = 0; bin < a->GetNcells(); ++bin)
+            Check(a->GetBinContent(bin) == b->GetBinContent(bin), "FXT QA/full mismatch");
+    }
+}
+
+void CheckSharedFxtCentrality(const fs::path& directory) {
+    const auto inputs = directory / "fxt-inputs", outputs = directory / "fxt-outputs";
+    fs::create_directory(inputs);
+    FxtFixture(inputs / "a.root", MultiplicitySample(0, 50));
+    FxtFixture(inputs / "b.root", MultiplicitySample(50, 100));
+    mcdst_lab::Options options;
+    options.hist_only = true;
+    const auto report = mcdst_lab::ProcessDirectory(inputs.string(), outputs.string(), options, 2);
+    Check(report.succeeded == 2 && report.failed == 0, "FXT batch failed");
+    std::array<int, 5> classes{};
+    for (const char* name : {"a.qa.root", "b.qa.root"}) {
+        TFile file((outputs / name).c_str(), "READ");
+        Check(Get<TParameter<Long64_t>>(file, "FxtCentralityEvents")->GetVal() == 100,
+              "centrality calibrated per file instead of whole directory");
+        Check(Get<TParameter<Long64_t>>(file, "FxtCentralityFiles")->GetVal() == 2,
+              "wrong calibration file count");
+        Check(Get<TTree>(file, "FxtCentralityMap")->GetEntries() == 100,
+              "incomplete global multiplicity map");
+        Near(Get<TH1>(file, "hNFxtReference")->Integral(0, 65537), 100., 0.,
+             "global FXT distribution lost zero-multiplicity events");
+        auto* tree = Get<TTree>(file, "LabMultiplicity");
+        int n = 0;
+        int category = -2;
+        double percentile = -1.0;
+        double low = -1.0;
+        double high = -1.0;
+        tree->SetBranchAddress("NFxt", &n);
+        tree->SetBranchAddress("FxtCentralityClass", &category);
+        tree->SetBranchAddress("FxtCentralityPercentile", &percentile);
+        tree->SetBranchAddress("FxtCentralityLow", &low);
+        tree->SetBranchAddress("FxtCentralityHigh", &high);
+        for (Long64_t i = 0; i < tree->GetEntries(); ++i) {
+            tree->GetEntry(i);
+            Near(low, 99. - n, 1e-12, "right-tail lower endpoint wrong");
+            Near(high, 100. - n, 1e-12, "right-tail upper endpoint wrong");
+            Near(percentile, 99.5 - n, 1e-12, "right-tail percentile wrong");
+            const int expected = n >= 90 ? 0 : n >= 70 ? 1 : n >= 50 ? 2 : n >= 20 ? 3 : -1;
+            Check(category == expected, "FXT centrality class wrong");
+            ++classes[category < 0 ? 4 : category];
+        }
+        tree->ResetBranchAddresses();
+    }
+    Check(classes == std::array<int, 5>{10, 20, 20, 30, 20}, "centrality class integrals wrong");
+}
+
+void CheckTiedFxtCentrality(const fs::path& directory) {
+    mcdst_lab::Options options;
+    options.hist_only = true;
+    auto tied = MultiplicitySample(0, 1);
+    tied.resize(4, tied.front());
+    for (int n : {10, 10, 20, 20, 30, 30}) {
+        tied.emplace_back(n, LabParticle{211, .5, -1., .138});
+    }
+    FxtFixture(directory / "tied.root", tied);
+    mcdst_lab::Process((directory / "tied.root").string(), (directory / "tied-qa.root").string(),
+                       options);
+    TFile file((directory / "tied-qa.root").c_str(), "READ");
+    auto* tree = Get<TTree>(file, "LabMultiplicity");
+    int category = -2;
+    double percentile = 0.;
+    tree->SetBranchAddress("FxtCentralityClass", &category);
+    tree->SetBranchAddress("FxtCentralityPercentile", &percentile);
+    constexpr std::array<int, 10> classes = {-1, -1, -1, -1, 3, 3, 2, 2, 1, 1};
+    constexpr std::array<double, 10> percentiles = {80, 80, 80, 80, 50, 50, 30, 30, 10, 10};
+    for (Long64_t i = 0; i < 10; ++i) {
+        tree->GetEntry(i);
+        Check(category == classes[i], "ties or exact centrality boundaries classified incorrectly");
+        Near(percentile, percentiles[i], 1e-12, "tie midpoint wrong");
+    }
+    tree->ResetBranchAddresses();
+}
+
+// Appended branches must stay aligned across ROOT basket/cluster boundaries.
+void CheckLargeCentralityTree(const fs::path& directory) {
+    mcdst_lab::Options options;
+    options.hist_only = true;
+    int category = -1;
+    double percentile = 0.0;
+    std::vector<std::vector<LabParticle>> many(10001);
+    for (std::size_t i = 1; i < many.size(); i += 2) {
+        many[i].push_back({211, .5, -1., .138});
+    }
+    FxtFixture(directory / "many.root", many);
+    mcdst_lab::Process((directory / "many.root").string(), (directory / "many-qa.root").string(),
+                       options);
+    TFile many_file((directory / "many-qa.root").c_str(), "READ");
+    auto* many_tree = Get<TTree>(many_file, "LabMultiplicity");
+    Check(many_tree->GetEntries() == 10001, "large event-count tree was truncated");
+    int n = -1;
+    int event_number = -1;
+    many_tree->SetBranchAddress("NFxt", &n);
+    many_tree->SetBranchAddress("EventNr", &event_number);
+    many_tree->SetBranchAddress("FxtCentralityClass", &category);
+    many_tree->SetBranchAddress("FxtCentralityPercentile", &percentile);
+    for (Long64_t i = 0; i < many_tree->GetEntries(); ++i) {
+        Check(many_tree->GetEntry(i) > 0, "cannot read centrality across basket boundaries");
+        Check(n == i % 2 && event_number == i && category == (n ? 1 : 3),
+              "centrality branches lost alignment with original event data");
+        Near(percentile, n ? 100. * 2500. / 10001. : 100. * 7500.5 / 10001., 1e-12,
+             "centrality percentile lost alignment across basket boundaries");
+    }
+    many_tree->ResetBranchAddresses();
+}
+
 template <class Action> void Reject(Action action, const std::string& expected) {
     try {
         action();
@@ -266,6 +461,10 @@ int main(int argc, char** argv) {
             Fixture(argv[2], argc > 3 ? std::stoi(argv[3]) : 1, argc > 4 ? std::stoi(argv[4]) : 99);
             return 0;
         }
+        if (argc >= 3 && std::string(argv[1]) == "--fxt-fixture") {
+            FxtFixture(argv[2], MultiplicitySample(0, 100));
+            return 0;
+        }
         Temp temp;
         const auto input = temp.path / "input.root", output = temp.path / "output.root";
         Fixture(input);
@@ -273,6 +472,10 @@ int main(int argc, char** argv) {
         mcdst_lab::Process(input.string(), output.string());
         Check(Bytes(input) == input_bytes, "input modified");
         CheckTransformed(input, output);
+        CheckFxtCuts(temp.path);
+        CheckSharedFxtCentrality(temp.path);
+        CheckTiedFxtCentrality(temp.path);
+        CheckLargeCentralityTree(temp.path);
 
         mcdst_lab::Options hist_only;
         hist_only.hist_only = true;
@@ -313,6 +516,12 @@ int main(int argc, char** argv) {
         {
             TFile empty(output.c_str(), "READ");
             Check(Get<TTree>(empty, "McDst")->GetEntries() == 0, "empty tree processing failed");
+            Check(Get<TTree>(empty, "FxtCentralityMap")->GetEntries() == 0,
+                  "empty sample acquired a centrality calibration");
+            Check(Get<TTree>(empty, "LabMultiplicity")
+                          ->GetBranch("FxtCentralityClass")
+                          ->GetEntries() == 0,
+                  "empty sample acquired classified events");
         }
 
         fs::create_directory(temp.path / "batch");
@@ -340,6 +549,9 @@ int main(int argc, char** argv) {
             TFile qa((temp.path / "batch-hist/b.qa.root").c_str(), "READ");
             Check(!qa.Get("McDst"), "QA output was incorrectly labeled as McDst");
             CheckHistograms(qa);
+            Check(Get<TParameter<Long64_t>>(qa, "FxtCentralityEvents")->GetVal() == 12 &&
+                      Get<TParameter<Long64_t>>(qa, "FxtCentralityFailedFiles")->GetVal() == 1,
+                  "failed inputs silently included in centrality reference");
         }
         fs::create_directory(temp.path / "colliding");
         fs::copy_file(input, temp.path / "colliding/a.root");
