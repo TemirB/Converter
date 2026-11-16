@@ -355,9 +355,87 @@ void RestoreSharedObjects(TFile& reference, TFile& output) {
     Write(source_name);
 }
 
+std::unique_ptr<TH1D> ResizedMultiplicityHistogram(TFile& file, const char* name, int maximum) {
+    auto& source = Get<TH1D>(file, name);
+    const std::string temporary_name = std::string(name) + "_merge_range";
+    auto histogram =
+        std::unique_ptr<TH1D>(static_cast<TH1D*>(source.Clone(temporary_name.c_str())));
+    histogram->SetDirectory(nullptr);
+    histogram->SetName(name);
+    histogram->SetBins(maximum + 1, -0.5, static_cast<double>(maximum) + 0.5);
+    histogram->Reset();
+    histogram->GetXaxis()->SetRange(0, 0);
+    return histogram;
+}
+
+void ResizeLocalMultiplicities(TFile& file, int maximum) {
+    constexpr std::array<const char*, 7> names = {
+        "hNAll", "hNCh", "hNFxt", "hNFxt_0_10", "hNFxt_10_30", "hNFxt_30_50", "hNFxt_50_80",
+    };
+    std::array<std::unique_ptr<TH1D>, names.size()> histograms;
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        histograms[index] = ResizedMultiplicityHistogram(file, names[index], maximum);
+    }
+
+    auto& tree = Get<TTree>(file, "LabMultiplicity");
+    constexpr std::array<const char*, 4> branches = {"NAll", "NCh", "NFxt", "FxtCentralityClass"};
+    std::array<int, branches.size()> values{};
+    ResetTreeAddresses reset(tree);
+    for (std::size_t index = 0; index < branches.size(); ++index) {
+        Require(tree.SetBranchAddress(branches[index], &values[index]) >= 0,
+                "cannot read multiplicity branch: " + std::string(branches[index]));
+    }
+
+    for (Long64_t entry = 0; entry < tree.GetEntries(); ++entry) {
+        for (const char* name : branches) {
+            Require(tree.GetBranch(name)->GetEntry(entry) > 0,
+                    "cannot read multiplicity branch: " + std::string(name));
+        }
+        for (std::size_t index = 0; index < 3; ++index) {
+            histograms[index]->Fill(values[index]);
+        }
+        const int category = values[3];
+        Require(category >= -1 && category < static_cast<int>(kCentralityClasses.size()),
+                "invalid FXT centrality class");
+        if (category >= 0) {
+            histograms[3 + category]->Fill(values[2]);
+        }
+    }
+    file.cd();
+    for (auto& histogram : histograms) {
+        Write(*histogram);
+    }
+}
+
+void ResizeCalibrationHistogram(TFile& file, int maximum) {
+    auto histogram = ResizedMultiplicityHistogram(file, "hNFxtReference", maximum);
+    for (const auto& [multiplicity, events, low, high, percentile, category] :
+         ReadCalibration(file)) {
+        const int bin = histogram->FindFixBin(multiplicity);
+        const double count = histogram->GetBinContent(bin) + events;
+        histogram->SetBinContent(bin, count);
+        histogram->SetBinError(bin, std::sqrt(count));
+    }
+    histogram->ResetStats();
+    histogram->SetEntries(Get<TParameter<Long64_t>>(file, "FxtCentralityEvents").GetVal());
+    file.cd();
+    Write(*histogram);
+}
+
+void SetMultiplicityRange(TFile& file, int maximum) {
+    // Rebuild from exact counts: simply rebinding existing bins would lose old overflow data.
+    ResizeLocalMultiplicities(file, maximum);
+    ResizeCalibrationHistogram(file, maximum);
+    WriteParameter("MergeXMax", maximum);
+}
+
 } // namespace
 
-Result Merge(const std::vector<std::string>& inputs, const std::string& output) {
+Result Merge(const std::vector<std::string>& inputs, const std::string& output,
+             const MergeOptions& options) {
+    Require(!options.x_max ||
+                (*options.x_max >= 0 && *options.x_max <= std::numeric_limits<int>::max() - 3),
+            "x-max must be a non-negative integer allowing room for histogram flow bins");
     InitializeRoot();
     Require(!output.empty() && !fs::exists(output),
             "output already exists or is empty; choose a new output path");
@@ -372,6 +450,9 @@ Result Merge(const std::vector<std::string>& inputs, const std::string& output) 
                 "cannot reopen complete merge output");
         RestoreSharedObjects(*reference, merged);
         WriteProvenance(paths, merged);
+        if (options.x_max) {
+            SetMultiplicityRange(merged, *options.x_max);
+        }
         Require(Get<TTree>(merged, "LabMultiplicity").GetEntries() == result.events,
                 "merged event count mismatch");
         Require(Get<TParameter<Long64_t>>(merged, "LabEvents").GetVal() == result.events,

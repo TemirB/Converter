@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,12 @@ struct BatchResult {
     std::size_t failed = 0;
 };
 
+struct MergeOptions {
+    // Inclusive maximum for integer multiplicity histograms; larger values go to overflow.
+    // Without a value the original histogram ranges are preserved.
+    std::optional<int> x_max;
+};
+
 // Includes NFxt: all known charged particles with -2 < eta_lab < 0, pT > 0.15 GeV/c.
 // Single-file centrality is calibrated on this file, including NFxt=0 events.
 // Throws on failure. The destination is replaced only after a complete write.
@@ -55,6 +62,7 @@ BatchResult ProcessDirectory(const std::string& input, const std::string& output
 
 // Merge per-file lab/QA results with identical FXT calibration. Input directories are expanded
 // non-recursively. Shared calibration is copied once; existing outputs are never overwritten.
-Result Merge(const std::vector<std::string>& inputs, const std::string& output);
+Result Merge(const std::vector<std::string>& inputs, const std::string& output,
+             const MergeOptions& options = {});
 
 } // namespace mcdst_lab

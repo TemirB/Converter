@@ -660,6 +660,90 @@ void CheckMergeBeyondOpenFileLimit(const fs::path& directory, const fs::path& in
     mcdst_lab::Merge({outputs.string()}, merged.string());
     CheckMergedResult(merged, outputs / "0.qa.root", 17, true);
 }
+
+void CheckReducedHistogramRange(TFile& merged, TFile& original, int maximum) {
+    for (const char* name : {"hNAll", "hNCh", "hNFxt", "hNFxtReference", "hNFxt_0_10",
+                             "hNFxt_10_30", "hNFxt_30_50", "hNFxt_50_80"}) {
+        auto* actual = Get<TH1>(merged, name);
+        auto* expected = Get<TH1>(original, name);
+        Check(actual->GetNbinsX() == maximum + 1, "wrong limited multiplicity bin count");
+        Near(actual->GetXaxis()->GetXmin(), -.5, 0., "wrong multiplicity lower bound");
+        Near(actual->GetXaxis()->GetXmax(), maximum + .5, 0., "wrong multiplicity upper bound");
+        for (int bin = 0; bin <= maximum + 1; ++bin) {
+            Near(actual->GetBinContent(bin), expected->GetBinContent(bin), 0.,
+                 "visible bin changed");
+            Near(actual->GetBinError(bin), expected->GetBinError(bin), 1e-12,
+                 "visible bin error changed");
+        }
+        const int overflow = actual->GetNbinsX() + 1;
+        Near(actual->GetBinContent(overflow),
+             expected->Integral(maximum + 2, expected->GetNbinsX() + 1), 0.,
+             "overflow lost events");
+        Near(actual->Integral(0, overflow), expected->Integral(0, expected->GetNbinsX() + 1), 0.,
+             "histogram total changed after limiting X");
+        Near(actual->GetEntries(), expected->GetEntries(), 0., "histogram entries changed");
+    }
+}
+
+void CheckMergeMultiplicityLimit(const fs::path& directory) {
+    const auto inputs = directory / "batch-out";
+    TFile original((directory / "merged.root").c_str(), "READ");
+    for (int maximum : {0, 2}) {
+        mcdst_lab::MergeOptions options;
+        options.x_max = maximum;
+        const auto output = directory / ("limited-" + std::to_string(maximum) + ".root");
+        const auto result = mcdst_lab::Merge({inputs.string()}, output.string(), options);
+        Check(result.events == 12 && result.particles == 1209, "X limit changed event counts");
+        TFile limited(output.c_str(), "READ");
+        CheckReducedHistogramRange(limited, original, maximum);
+        Check(Get<TParameter<int>>(limited, "MergeXMax")->GetVal() == maximum,
+              "missing X limit metadata");
+        Check(Get<TTree>(limited, "McDst")->GetEntries() == 12, "X limit removed McDst events");
+        Check(Get<TTree>(limited, "LabMultiplicity")->GetEntries() == 12,
+              "X limit removed multiplicities");
+        Check(Get<TH1>(limited, "hFxtCentrality")->GetNbinsX() == 5, "class axis was resized");
+        Check(Get<TH2>(limited, "hEtaPtAfter")->GetNbinsX() == 240, "eta axis was resized");
+        Check(Get<TTree>(limited, "FxtCentralityMap")->GetEntries() ==
+                  Get<TTree>(original, "FxtCentralityMap")->GetEntries(),
+              "X limit changed calibration map");
+        Check(Get<TParameter<Long64_t>>(limited, "FxtCentralityEvents")->GetVal() == 12,
+              "X limit changed centrality normalization");
+    }
+    mcdst_lab::MergeOptions invalid;
+    invalid.x_max = -1;
+    const auto rejected = directory / "invalid-range.root";
+    Reject([&] { mcdst_lab::Merge({inputs.string()}, rejected.string(), invalid); },
+           "x-max must be");
+    Check(!fs::exists(rejected), "invalid X limit created an output");
+}
+
+void CheckMergeMultiplicityBeyond65535(const fs::path& directory) {
+    const auto input = directory / "large-multiplicity.root";
+    const auto qa = directory / "large-multiplicity-qa.root";
+    FxtFixture(input, MultiplicitySample(70000, 70001));
+    mcdst_lab::Options processing;
+    processing.hist_only = true;
+    mcdst_lab::Process(input.string(), qa.string(), processing);
+    {
+        TFile source(qa.c_str(), "READ");
+        auto* histogram = Get<TH1>(source, "hNFxt");
+        Near(histogram->GetBinContent(histogram->GetNbinsX() + 1), 1., 0.,
+             "fixture did not exercise original overflow");
+    }
+    mcdst_lab::MergeOptions options;
+    options.x_max = 80000;
+    const auto output = directory / "expanded-multiplicity.root";
+    mcdst_lab::Merge({qa.string()}, output.string(), options);
+    TFile merged(output.c_str(), "READ");
+    for (const char* name : {"hNAll", "hNCh", "hNFxt", "hNFxtReference", "hNFxt_50_80"}) {
+        auto* histogram = Get<TH1>(merged, name);
+        Check(histogram->GetNbinsX() == 80001, "X range still limited to 65536 bins");
+        Near(histogram->GetBinContent(histogram->FindFixBin(70000.)), 1., 0.,
+             "original overflow was not recovered from exact event counts");
+        Near(histogram->GetBinContent(histogram->GetNbinsX() + 1), 0., 0., "unexpected overflow");
+        Near(histogram->GetEntries(), 1., 0., "expanded histogram entries wrong");
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -769,6 +853,8 @@ int main(int argc, char** argv) {
                   "failed inputs silently included in centrality reference");
         }
         CheckMerging(temp.path, input);
+        CheckMergeMultiplicityLimit(temp.path);
+        CheckMergeMultiplicityBeyond65535(temp.path);
         CheckMergeBeyondOpenFileLimit(temp.path, input);
         fs::create_directory(temp.path / "colliding");
         fs::copy_file(input, temp.path / "colliding/a.root");

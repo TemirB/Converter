@@ -95,7 +95,9 @@ void ConfigureAxes(TH1D& reference, int maximum_multiplicity) {
     reference.SetTitle("FXT multiplicity: charged, -2 < #eta_{lab} < 0, p_{T} > 0.15 GeV/c");
     reference.GetXaxis()->SetTitle("N_{FXT}");
     reference.GetYaxis()->SetTitle("Events / multiplicity bin");
-    reference.GetXaxis()->SetRangeUser(-0.5, std::min(65535.5, maximum_multiplicity * 1.08 + 1.0));
+    const double axis_maximum = reference.GetXaxis()->GetXmax();
+    reference.GetXaxis()->SetRangeUser(-0.5,
+                                       std::min(axis_maximum, maximum_multiplicity * 1.08 + 1.0));
     reference.SetMinimum(0.5);
     reference.SetMaximum(std::max(1.0, reference.GetMaximum()) * 4.0);
     reference.SetLineColor(kBlack);
