@@ -548,6 +548,118 @@ void CheckIncompleteExtraBranch(const fs::path& directory, const fs::path& exist
     const auto result = mcdst_lab::Process(input.string(), qa_path.string(), options);
     Check(result.events == 2 && result.particles == 2, "QA rejected an unused extra branch");
 }
+
+void CheckMergedResult(const fs::path& path, const fs::path& reference_path, int files, bool qa) {
+    TFile merged(path.c_str(), "READ");
+    TFile reference(reference_path.c_str(), "READ");
+    Check(Get<TTree>(merged, "LabMultiplicity")->GetEntries() == 4 * files,
+          "merged event tree lost entries");
+    Check((merged.Get("McDst") == nullptr) == qa, "merged tree/QA mode changed");
+    Check(Get<TParameter<int>>(merged, "LabHistOnly")->GetVal() == static_cast<int>(qa),
+          "LabHistOnly was summed");
+    Near(Get<TParameter<double>>(merged, "LabSqrtsNN")->GetVal(), 3., 0., "beam energy was summed");
+    Near(Get<TParameter<double>>(merged, "FxtPtMin")->GetVal(), .15, 0., "FXT cut was summed");
+    Check(Get<TParameter<Long64_t>>(merged, "LabEvents")->GetVal() == 4 * files,
+          "LabEvents not summed");
+    Check(Get<TParameter<Long64_t>>(merged, "LabParticles")->GetVal() == 403 * files,
+          "LabParticles not summed");
+    Check(Get<TParameter<Long64_t>>(merged, "FxtCentralityEvents")->GetVal() ==
+              Get<TParameter<Long64_t>>(reference, "FxtCentralityEvents")->GetVal(),
+          "calibration size was summed");
+    Check(Get<TTree>(merged, "FxtCentralityMap")->GetEntries() ==
+              Get<TTree>(reference, "FxtCentralityMap")->GetEntries(),
+          "global FXT map was concatenated");
+    Near(Get<TH1>(merged, "hNFxtReference")->Integral(0, 65537),
+         Get<TH1>(reference, "hNFxtReference")->Integral(0, 65537), 0.,
+         "global FXT reference was summed");
+    for (const char* name :
+         {"hEtaPtBefore", "hEtaPtAfter", "hNFxt", "hFxtCentrality", "hNAll", "hNCh"}) {
+        auto* actual = Get<TH1>(merged, name);
+        auto* expected = Get<TH1>(reference, name);
+        for (int bin = 0; bin < actual->GetNcells(); ++bin) {
+            Near(actual->GetBinContent(bin), files * expected->GetBinContent(bin), 0.,
+                 "local histogram did not merge");
+        }
+    }
+    Get<McRun>(merged, "SourceMetadata/run");
+    Get<McRun>(merged, "MergedSources/0/SourceMetadata/run");
+    if (!qa) {
+        auto* tree = Get<TTree>(merged, "McDst");
+        Check(tree->GetEntries() == 4 * files, "McDst events lost in merge");
+        int tag = -1;
+        tree->SetBranchAddress("UserTag", &tag);
+        for (Long64_t entry = 0; entry < tree->GetEntries(); ++entry) {
+            tree->GetEntry(entry);
+            Check(tag == entry % 4, "extra branch lost during merge");
+        }
+        tree->ResetBranchAddresses();
+        Near(Get<McRun>(merged, "run")->pTarg(), 0., 0., "merged run header is not an McRun");
+    }
+    auto* manifest = Get<TTree>(merged, "MergeInputs");
+    Check(manifest->GetEntries() == files, "merge provenance lost");
+    Long64_t first = -1;
+    manifest->SetBranchAddress("FirstEntry", &first);
+    for (int index = 0; index < files; ++index) {
+        manifest->GetEntry(index);
+        Check(first == index * 4, "merge provenance ranges wrong");
+    }
+    manifest->ResetBranchAddresses();
+}
+
+void CheckMerging(const fs::path& directory, const fs::path& input) {
+    const auto full = directory / "merged.root";
+    const auto result = mcdst_lab::Merge({(directory / "batch-out").string()}, full.string());
+    Check(result.events == 12 && result.particles == 1209 && result.unknown_pdg == 3,
+          "wrong merge summary");
+    CheckMergedResult(full, directory / "batch-out/a.mcDst.root", 3, false);
+
+    const auto qa = directory / "merged-qa.root";
+    mcdst_lab::Merge({(directory / "batch-hist").string()}, qa.string());
+    CheckMergedResult(qa, directory / "batch-hist/a.qa.root", 3, true);
+    const auto original = Bytes(full);
+    Reject([&] { mcdst_lab::Merge({qa.string()}, full.string()); }, "output already exists");
+    Check(Bytes(full) == original, "merge replaced an existing output");
+
+    const auto rejected = directory / "rejected-merge.root";
+    Reject([&] { mcdst_lab::Merge({qa.string(), qa.string()}, rejected.string()); },
+           "duplicate input");
+    Reject([&] { mcdst_lab::Merge({full.string()}, rejected.string()); }, "input already merged");
+    const auto single = directory / "single-lab.root";
+    mcdst_lab::Process(input.string(), single.string());
+    Reject(
+        [&] {
+            mcdst_lab::Merge({single.string(), (directory / "batch-out/a.mcDst.root").string()},
+                             rejected.string());
+        },
+        "incompatible metadata");
+    const auto incomplete = directory / "incomplete-merge-input.root";
+    fs::copy_file(directory / "batch-out/a.mcDst.root", incomplete);
+    {
+        TFile file(incomplete.c_str(), "UPDATE");
+        auto* tree = Get<TTree>(file, "McDst");
+        tree->GetBranch("Particle")->SetEntries(3);
+        tree->Write(nullptr, TObject::kOverwrite);
+    }
+    Reject([&] { mcdst_lab::Merge({incomplete.string()}, rejected.string()); },
+           "incomplete event branch");
+    Check(!fs::exists(rejected), "rejected merge left an output file");
+}
+
+void CheckMergeBeyondOpenFileLimit(const fs::path& directory, const fs::path& input) {
+    const auto sources = directory / "many-merge-inputs";
+    const auto outputs = directory / "many-merge-outputs";
+    fs::create_directory(sources);
+    for (int index = 0; index < 17; ++index) {
+        fs::copy_file(input, sources / (std::to_string(index) + ".root"));
+    }
+    mcdst_lab::Options options;
+    options.hist_only = true;
+    const auto report = mcdst_lab::ProcessDirectory(sources.string(), outputs.string(), options, 2);
+    Check(report.succeeded == 17 && report.failed == 0, "cannot create many merge inputs");
+    const auto merged = directory / "merged-many.root";
+    mcdst_lab::Merge({outputs.string()}, merged.string());
+    CheckMergedResult(merged, outputs / "0.qa.root", 17, true);
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -656,6 +768,8 @@ int main(int argc, char** argv) {
                       Get<TParameter<Long64_t>>(qa, "FxtCentralityFailedFiles")->GetVal() == 1,
                   "failed inputs silently included in centrality reference");
         }
+        CheckMerging(temp.path, input);
+        CheckMergeBeyondOpenFileLimit(temp.path, input);
         fs::create_directory(temp.path / "colliding");
         fs::copy_file(input, temp.path / "colliding/a.root");
         fs::copy_file(input, temp.path / "colliding/a.McDst.root");

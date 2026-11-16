@@ -7,6 +7,7 @@ converter_profile
 converter_tests
 converter_validation_tests
 mcdst_lab
+mcdst_merge
 .cache
 mcdst_lab_tests
 .make/

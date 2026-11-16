@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace mcdst_lab {
 
@@ -51,5 +52,9 @@ Result Process(const std::string& input, const std::string& output, const Option
 BatchResult ProcessDirectory(const std::string& input, const std::string& output,
                              const Options& options = {}, unsigned threads = 0,
                              std::size_t max_files = 0);
+
+// Merge per-file lab/QA results with identical FXT calibration. Input directories are expanded
+// non-recursively. Shared calibration is copied once; existing outputs are never overwritten.
+Result Merge(const std::vector<std::string>& inputs, const std::string& output);
 
 } // namespace mcdst_lab

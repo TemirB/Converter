@@ -26,9 +26,7 @@ McRun::McRun() : TNamed("run", "Run Header" ),
 		 fATarg( 0 ), fZTarg( 0 ), fPTarg( 0 ),
 		 fBMin( 0 ), fBMax( 0 ), fBWeight( 0 ),
 		 fPhiMin( 0 ), fPhiMax( 0 ), fXSection( 0 ), fNEvents( 0 ) {
-  // Default constructor. Should not be used
-  std::cout << "Warning: Default constructor of McRun should not be used!"
-            << std::endl;
+  // ROOT uses the default constructor before restoring the serialized run header.
 }
 
 //_________________

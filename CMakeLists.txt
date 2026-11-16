@@ -47,7 +47,8 @@ add_library(mcdst_lab_core STATIC
     tools/McDstLab.cpp
     tools/McDstLabIO.cpp
     tools/McDstLabCentrality.cpp
-    tools/McDstLabBatch.cpp)
+    tools/McDstLabBatch.cpp
+    tools/McDstLabMerge.cpp)
 target_include_directories(mcdst_lab_core PUBLIC tools)
 target_compile_options(mcdst_lab_core PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(mcdst_lab_core PUBLIC converter_mcdst ROOT::Core ROOT::RIO ROOT::Tree ROOT::Hist ROOT::Physics ROOT::EG)
@@ -55,6 +56,8 @@ target_link_libraries(mcdst_lab_core PUBLIC converter_mcdst ROOT::Core ROOT::RIO
 target_compile_definitions(mcdst_lab_core PUBLIC __ROOT__)
 add_executable(mcdst_lab tools/mcdst_lab.cpp)
 target_link_libraries(mcdst_lab PRIVATE mcdst_lab_core)
+add_executable(mcdst_merge tools/mcdst_merge.cpp)
+target_link_libraries(mcdst_merge PRIVATE mcdst_lab_core)
 
 if(CONVERTER_SANITIZE)
     target_compile_options(converter_core PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
