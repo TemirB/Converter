@@ -34,7 +34,7 @@ else()
         OPTIONS -D__ROOT__ -I${MCDST_INCLUDE_DIR})
 endif()
 
-add_library(converter_core STATIC src/OscarReader.cpp src/OscarConverter.cpp src/OscarConverterV1.cpp src/ConverterValidation.cpp src/McDstWriter.cpp src/RootConverter.cpp)
+add_library(converter_core STATIC src/OscarReader.cpp src/OscarConverter.cpp src/OscarConverterV1.cpp src/SmashInteraction.cpp src/ConverterValidation.cpp src/McDstWriter.cpp src/RootConverter.cpp)
 target_include_directories(converter_core PUBLIC include)
 target_include_directories(converter_core SYSTEM PUBLIC "${MCDST_INCLUDE_DIR}")
 target_compile_definitions(converter_core PUBLIC __ROOT__)

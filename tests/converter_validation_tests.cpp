@@ -46,6 +46,7 @@ struct TempDirectory {
 struct FixtureParticle {
     int id, pdg = 211;
     std::array<double, 6> values = {1., 2., 3., 4., 5., 6.};
+    double energy = 10., time = 20.;
 };
 struct FixtureEvent {
     int number;
@@ -75,7 +76,7 @@ void WriteMcDst(const fs::path& path, const std::vector<FixtureEvent>& input) {
             const auto& v = particle.values;
             const int i = particles.GetEntriesFast();
             new (particles[i]) McParticle(i, particle.pdg, 0, 0, 0, -1, 0, children, v[0], v[1],
-                                          v[2], 10., v[3], v[4], v[5], 20.);
+                                          v[2], particle.energy, v[3], v[4], v[5], particle.time);
             ids.push_back(particle.id);
         }
         tree.Fill();
@@ -312,6 +313,67 @@ void TestConverters(const fs::path& directory) {
           "failed conversion produced a comparison report");
 }
 
+void TestTimeEnergyAndLabels(const fs::path& directory) {
+    const auto current = directory / "energy-current.root";
+    const auto reference = directory / "energy-reference.root";
+    const auto report = directory / "energy-diff.csv";
+    FixtureParticle particle{400};
+    WriteMcDst(reference, {{7, 6., {particle}}});
+    particle.energy = 11.;
+    particle.time = 22.;
+    WriteMcDst(current, {{7, 6., {particle}}});
+    Check(CompareMcDstVersions(current.string(), reference.string(), report.string(), "version2",
+                               "version1") == ValidationResult::Different,
+          "energy/time-only differences were ignored");
+    const auto rows = ReadCsv(report);
+    Check(rows.size() == 2 && rows[1].at("status") == "different" &&
+              rows[1].at("diff_energy") == "1" && rows[1].at("diff_time") == "2" &&
+              rows[1].at("version2_energy") == "11" && rows[1].at("version1_time") == "20",
+          "version labels or energy/time deltas are wrong");
+    TFile histograms((directory / "energy-diff.root").c_str(), "READ");
+    CheckHistogram(histograms, "diff_energy", 1., 1.);
+    CheckHistogram(histograms, "diff_time", 1., 2.);
+    Check(dynamic_cast<TNamed*>(histograms.Get("version2_input")) &&
+              dynamic_cast<TNamed*>(histograms.Get("version1_input")),
+          "comparison did not label its actual versions");
+}
+
+void TestAllVersions(const fs::path& directory) {
+    const auto source = directory / "all-versions.oscar";
+    const auto output = directory / "all-versions.validation";
+    {
+        std::ofstream file(source);
+        file << "# event 0 ensemble 0 in 2\n"
+                "0 1 2 3 .938 4 .1 .2 .3 2212 393 1\n"
+                "0 4 5 6 .938 4 .4 .5 .6 2112 1000 0\n"
+                "# interaction in 2 out 2 rho 0 weight 1 partial 1 type 1\n"
+                "1 7 8 9 .938 4 .1 .2 .3 2212 393 1\n"
+                "1 7 8 9 .938 4 .4 .5 .6 2112 1000 0\n"
+                "1 9 8 7 .938 4 .2 .3 .4 2212 393 1\n"
+                "1 9 8 7 .938 4 .5 .6 .7 2112 1000 0\n"
+                "# event 0 ensemble 0 out 2\n"
+                "200 40 50 60 .938 4 1 2 3 2212 393 1\n"
+                "200 10 20 30 .938 4 4 5 6 2112 1000 0\n"
+                "# event 0 ensemble 0 end 0 impact 7.5 scattering_projectile_target yes\n";
+    }
+    Check(ValidateAllOscarVersions(source.string(), output.string()) == ValidationResult::Different,
+          "three-version validation ignored the new spectator definition");
+    for (const char* name : {"version0.McDst.root", "version1.McDst.root", "version2.McDst.root",
+                             "diff_1_0.root", "diff_2_0.root", "diff_2_1.root", "timings.csv"})
+        Check(fs::exists(output / name), "three-version output is missing");
+    const auto original = ReadCsv(output / "diff_1_0.csv");
+    for (const auto& row : original)
+        Check(row.at("status") == "equal", "version 0/1 behavior changed");
+    const auto selected = ReadCsv(output / "diff_2_1.csv");
+    Check(selected[2].at("particle_id") == "1000" && selected[2].at("version2_x") == "-999" &&
+              selected[2].at("version1_x") == "9" && selected[2].at("diff_px") == "0" &&
+              selected[2].at("diff_energy") == "0",
+          "inelastic spectator comparison mixed up versions or changed momenta");
+    Check(ValidateAllOscarVersions((directory / "missing.oscar").string()) ==
+              ValidationResult::Error,
+          "three-version validation accepted a missing input");
+}
+
 } // namespace
 
 int main() {
@@ -319,6 +381,8 @@ int main() {
         TempDirectory temp;
         TestComparison(temp.path);
         TestConverters(temp.path);
+        TestTimeEnergyAndLabels(temp.path);
+        TestAllVersions(temp.path);
         std::cout
             << "Legacy conversion, ID matching, signed deltas and missing-record checks passed.\n";
         return 0;

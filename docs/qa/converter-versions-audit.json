@@ -1,0 +1,115 @@
+{
+  "smash_version": "3.1",
+  "seed": 246813579,
+  "sqrtsnn_GeV": 3,
+  "impact_fm": 7.5,
+  "initial_particles": 394,
+  "final_particles": 485,
+  "process_counts": {
+    "1": 754,
+    "2": 336,
+    "3": 161,
+    "5": 419,
+    "45": 4
+  },
+  "initial_particles_with_inelastic_interaction": 238,
+  "final_spectators": 156,
+  "checked_fields": [
+    "pdg",
+    "px",
+    "py",
+    "pz",
+    "energy",
+    "x",
+    "y",
+    "z",
+    "time"
+  ],
+  "independent_reference_mismatches": 0,
+  "particle_payload_sha256": "32e8f854e2b61b0733f42bb9b9aafb533c575d0f96da4a8a1631705a04808127",
+  "oscar_sha256": "4c457de5ce023a5a1f86bd92e40ed7d9942ff9cf11f712b7e325ff1ec06a2863",
+  "pairwise": {
+    "raw": {
+      "1_0": {
+        "event_rows": {
+          "version1_only": 1
+        },
+        "particle_rows": {
+          "version1_only": 485
+        }
+      },
+      "2_0": {
+        "event_rows": {
+          "version2_only": 1
+        },
+        "particle_rows": {
+          "version2_only": 485
+        }
+      },
+      "2_1": {
+        "event_rows": {
+          "equal": 1
+        },
+        "particle_rows": {
+          "equal": 485
+        }
+      }
+    },
+    "ensemble": {
+      "1_0": {
+        "event_rows": {
+          "equal": 1
+        },
+        "particle_rows": {
+          "equal": 485
+        }
+      },
+      "2_0": {
+        "event_rows": {
+          "equal": 1
+        },
+        "particle_rows": {
+          "equal": 485
+        }
+      },
+      "2_1": {
+        "event_rows": {
+          "equal": 1
+        },
+        "particle_rows": {
+          "equal": 485
+        }
+      }
+    }
+  },
+  "timings": {
+    "raw": [
+      {
+        "version": "0",
+        "conversion_seconds": "0.3080299"
+      },
+      {
+        "version": "1",
+        "conversion_seconds": "0.017853059"
+      },
+      {
+        "version": "2",
+        "conversion_seconds": "0.018853489"
+      }
+    ],
+    "ensemble": [
+      {
+        "version": "0",
+        "conversion_seconds": "0.311721269"
+      },
+      {
+        "version": "1",
+        "conversion_seconds": "0.017949082"
+      },
+      {
+        "version": "2",
+        "conversion_seconds": "0.01853975"
+      }
+    ]
+  }
+}

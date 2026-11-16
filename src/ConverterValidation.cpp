@@ -12,6 +12,7 @@
 #include "TTree.h"
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -30,15 +31,18 @@ namespace {
 using EventKey = std::pair<int, int>; // Event number and occurrence, starting at zero.
 using ParticlePair = std::pair<const McParticle*, const McParticle*>;
 using Getter = Double_t (McParticle::*)() const;
-constexpr std::array<Getter, 6> kGetters = {&McParticle::px, &McParticle::py, &McParticle::pz,
-                                            &McParticle::x,  &McParticle::y,  &McParticle::z};
-constexpr std::array<const char*, 8> kComponentNames = {
-    "px", "py", "pz", "x", "y", "z", "multiplicity", "impact_parameter"};
+constexpr std::array<Getter, 8> kGetters = {&McParticle::px, &McParticle::py, &McParticle::pz,
+                                            &McParticle::x,  &McParticle::y,  &McParticle::z,
+                                            &McParticle::e,  &McParticle::t};
+constexpr std::array<const char*, 10> kComponentNames = {
+    "px", "py", "pz", "x", "y", "z", "energy", "time", "multiplicity", "impact_parameter"};
 
 class ValidationHistograms {
   public:
-    explicit ValidationHistograms(const std::string& filename)
-        : file_(TFile::Open(filename.c_str(), "RECREATE", "Current converter vs v1")) {
+    ValidationHistograms(const std::string& filename, const std::string& currentLabel,
+                         const std::string& referenceLabel)
+        : currentLabel_(currentLabel), referenceLabel_(referenceLabel),
+          file_(TFile::Open(filename.c_str(), "RECREATE", "Converter comparison")) {
         eventStatus_.SetDirectory(nullptr);
         particleStatus_.SetDirectory(nullptr);
         if (!file_ || file_->IsZombie())
@@ -46,11 +50,16 @@ class ValidationHistograms {
         file_->SetCompressionLevel(1);
         for (std::size_t i = 0; i < histograms_.size(); ++i) {
             const std::string name = std::string("diff_") + kComponentNames[i];
-            const char* unit = i < 3 ? " [GeV/c]" : i == 6 ? "" : " [fm]";
-            const std::string title = std::string(kComponentNames[i]) + " (current - v1);Delta " +
-                                      kComponentNames[i] + unit +
-                                      (i < 6 ? ";Matched particles" : ";Matched events");
-            const double halfRange = i == 6 ? 100.5 : 1.005e-6;
+            const char* unit = i < 3    ? " [GeV/c]"
+                               : i == 6 ? " [GeV]"
+                               : i == 7 ? " [fm/c]"
+                               : i == 8 ? ""
+                                        : " [fm]";
+            const std::string title =
+                std::string(kComponentNames[i]) + " (" + currentLabel_ + " - " + referenceLabel_ +
+                ");Delta " + kComponentNames[i] + unit +
+                (i < kGetters.size() ? ";Matched particles" : ";Matched events");
+            const double halfRange = i == kGetters.size() ? 100.5 : 1.005e-6;
             histograms_[i] =
                 std::make_unique<TH1D>(name.c_str(), title.c_str(), 201, -halfRange, halfRange);
             histograms_[i]->SetDirectory(nullptr);
@@ -58,8 +67,9 @@ class ValidationHistograms {
         }
         for (auto* histogram : {&eventStatus_, &particleStatus_}) {
             int bin = 1;
-            for (const char* label : {"equal", "different", "current_only", "v1_only"})
-                histogram->GetXaxis()->SetBinLabel(bin++, label);
+            for (const std::string& label : {std::string("equal"), std::string("different"),
+                                             currentLabel_ + "_only", referenceLabel_ + "_only"})
+                histogram->GetXaxis()->SetBinLabel(bin++, label.c_str());
         }
     }
 
@@ -74,8 +84,8 @@ class ValidationHistograms {
                    int v1Multiplicity, bool equal) {
         eventStatus_.Fill(StatusBin(current, v1, equal));
         if (current && v1) {
-            histograms_[6]->Fill(currentMultiplicity - v1Multiplicity);
-            histograms_[7]->Fill(current->b() - v1->b());
+            histograms_[kGetters.size()]->Fill(currentMultiplicity - v1Multiplicity);
+            histograms_[kGetters.size() + 1]->Fill(current->b() - v1->b());
         }
     }
 
@@ -85,14 +95,16 @@ class ValidationHistograms {
             WriteObject(*histogram);
         WriteObject(eventStatus_);
         WriteObject(particleStatus_);
-        TNamed convention("comparison",
-                          "Differences: current - v1. Particles matched by OSCAR ID; "
-                          "events by event number and occurrence. Particle histograms "
-                          "contain matched IDs; multiplicity and impact parameter "
-                          "are filled once per matched event. Missing entries are "
-                          "counted in event_status and particle_status.");
-        TNamed currentInput("current_input", currentFilename.c_str());
-        TNamed v1Input("v1_input", v1Filename.c_str());
+        const std::string description =
+            "Differences: " + currentLabel_ + " - " + referenceLabel_ +
+            ". Particles matched by OSCAR ID; "
+            "events by event number and occurrence. Particle histograms "
+            "contain matched IDs; multiplicity and impact parameter "
+            "are filled once per matched event. Missing entries are "
+            "counted in event_status and particle_status.";
+        TNamed convention("comparison", description.c_str());
+        TNamed currentInput((currentLabel_ + "_input").c_str(), currentFilename.c_str());
+        TNamed v1Input((referenceLabel_ + "_input").c_str(), v1Filename.c_str());
         WriteObject(convention);
         WriteObject(currentInput);
         WriteObject(v1Input);
@@ -113,8 +125,9 @@ class ValidationHistograms {
                                      object.GetName());
     }
 
+    std::string currentLabel_, referenceLabel_;
     std::unique_ptr<TFile> file_;
-    std::array<std::unique_ptr<TH1D>, 8> histograms_;
+    std::array<std::unique_ptr<TH1D>, kComponentNames.size()> histograms_;
     TH1D eventStatus_{"event_status", "Event comparison;Status;Events", 4, .5, 4.5};
     TH1D particleStatus_{"particle_status", "Particle comparison;Status;Particles", 4, .5, 4.5};
 };
@@ -238,7 +251,9 @@ void CheckDistinct(const std::filesystem::path& source, const std::filesystem::p
 
 ValidationResult CompareMcDstVersions(const std::string& currentFilename,
                                       const std::string& v1Filename,
-                                      const std::string& reportFilename) {
+                                      const std::string& reportFilename,
+                                      const std::string& currentLabel,
+                                      const std::string& referenceLabel) {
     TDirectory::TContext context;
     try {
         CheckDistinct(currentFilename, reportFilename);
@@ -261,16 +276,18 @@ ValidationResult CompareMcDstVersions(const std::string& currentFilename,
                 found->second.second = entry.second;
         }
 
-        ValidationHistograms histograms(histogramFilename.string());
+        ValidationHistograms histograms(histogramFilename.string(), currentLabel, referenceLabel);
         std::ofstream report(reportFilename);
         if (!report)
             throw std::runtime_error("cannot create diff report: " + reportFilename);
         report.imbue(std::locale::classic());
         report << std::setprecision(std::numeric_limits<double>::max_digits10);
-        report << "row_type,event_nr,event_occurrence,particle_id,status,"
-                  "current_index,v1_index,current_pdg,v1_pdg";
+        report << "row_type,event_nr,event_occurrence,particle_id,status," << currentLabel
+               << "_index," << referenceLabel << "_index," << currentLabel << "_pdg,"
+               << referenceLabel << "_pdg";
         for (const char* name : kComponentNames)
-            report << ",current_" << name << ",v1_" << name << ",diff_" << name;
+            report << ',' << currentLabel << '_' << name << ',' << referenceLabel << '_' << name
+                   << ",diff_" << name;
         report << '\n';
 
         std::size_t differingEvents = 0, matchedParticles = 0, differingParticles = 0;
@@ -308,32 +325,36 @@ ValidationResult CompareMcDstVersions(const std::string& currentFilename,
             histograms.FillEvent(
                 currentEvent ? current.Event() : nullptr, v1Event ? v1.Event() : nullptr,
                 currentEvent ? current.Multiplicity() : 0, v1Event ? v1.Multiplicity() : 0, equal);
-            const char* status = !currentEvent ? "v1_only"
-                                 : !v1Event    ? "current_only"
-                                 : equal       ? "equal"
-                                               : "different";
-            WriteRow(report, entry.first, std::nullopt, status, {}, currentEvent, v1Event);
+            const std::string status = !currentEvent ? referenceLabel + "_only"
+                                       : !v1Event    ? currentLabel + "_only"
+                                       : equal       ? "equal"
+                                                     : "different";
+            WriteRow(report, entry.first, std::nullopt, status.c_str(), {}, currentEvent, v1Event);
             for (const auto& particle : particles) {
                 const auto& pair = particle.second;
-                const char* particleStatus = !pair.first            ? "v1_only"
-                                             : !pair.second         ? "current_only"
-                                             : EqualParticles(pair) ? "equal"
-                                                                    : "different";
-                WriteRow(report, entry.first, particle.first, particleStatus, pair, currentEvent,
-                         v1Event);
+                const std::string particleStatus = !pair.first            ? referenceLabel + "_only"
+                                                   : !pair.second         ? currentLabel + "_only"
+                                                   : EqualParticles(pair) ? "equal"
+                                                                          : "different";
+                WriteRow(report, entry.first, particle.first, particleStatus.c_str(), pair,
+                         currentEvent, v1Event);
             }
         }
         report.close();
         if (!report)
             throw std::runtime_error("failed to write diff report: " + reportFilename);
         histograms.Write(currentFilename, v1Filename);
-        std::cout << "Events: current=" << currentIndex.size() << " v1=" << v1Index.size()
-                  << " differing=" << differingEvents << '\n'
+        std::cout << "Events: " << currentLabel << '=' << currentIndex.size() << ' '
+                  << referenceLabel << '=' << v1Index.size() << " differing=" << differingEvents
+                  << '\n'
                   << "Particles: matched=" << matchedParticles
-                  << " differing=" << differingParticles << " current_only=" << currentOnlyParticles
-                  << " v1_only=" << v1OnlyParticles << '\n'
-                  << "Diff report (current - v1): " << reportFilename << '\n'
-                  << "ROOT histograms (current - v1): " << histogramFilename.string() << '\n';
+                  << " differing=" << differingParticles << ' ' << currentLabel
+                  << "_only=" << currentOnlyParticles << ' ' << referenceLabel
+                  << "_only=" << v1OnlyParticles << '\n'
+                  << "Diff report (" << currentLabel << " - " << referenceLabel
+                  << "): " << reportFilename << '\n'
+                  << "ROOT histograms (" << currentLabel << " - " << referenceLabel
+                  << "): " << histogramFilename.string() << '\n';
         return differingEvents == 0 ? ValidationResult::Equal : ValidationResult::Different;
     } catch (const std::exception& error) {
         std::cerr << "Comparison failed: " << error.what() << '\n';
@@ -368,6 +389,69 @@ ValidationResult ValidateOscarVersions(const std::string& inputFilename,
         return CompareMcDstVersions(current.string(), v1.string(), report.string());
     } catch (const std::exception& error) {
         std::cerr << "Validation failed: " << error.what() << '\n';
+        return ValidationResult::Error;
+    }
+}
+
+ValidationResult ValidateAllOscarVersions(const std::string& inputFilename,
+                                          const std::string& outputDirectory) {
+    TDirectory::TContext context;
+    namespace fs = std::filesystem;
+    try {
+        if (!fs::is_regular_file(inputFilename))
+            throw std::runtime_error("input must be an OSCAR file: " + inputFilename);
+        const fs::path directory =
+            outputDirectory.empty() ? inputFilename + ".versions.validation" : outputDirectory;
+        const std::array<std::string, 3> labels = {"version0", "version1", "version2"};
+        std::array<fs::path, 3> outputs;
+        for (std::size_t index = 0; index < outputs.size(); ++index) {
+            outputs[index] = directory / (labels[index] + ".McDst.root");
+            CheckDistinct(inputFilename, outputs[index]);
+        }
+        const std::array<std::pair<int, int>, 3> pairs = {{{1, 0}, {2, 0}, {2, 1}}};
+        for (const auto& [current, reference] : pairs) {
+            const std::string stem =
+                "diff_" + std::to_string(current) + "_" + std::to_string(reference);
+            for (const char* extension : {".csv", ".root"})
+                CheckDistinct(inputFilename, directory / (stem + extension));
+        }
+        const auto timingPath = directory / "timings.csv";
+        CheckDistinct(inputFilename, timingPath);
+        fs::create_directories(directory);
+        std::ofstream timings(timingPath);
+        timings.imbue(std::locale::classic());
+        timings << "version,conversion_seconds\n" << std::setprecision(9);
+        for (int version = 0; version < 3; ++version) {
+            ConversionOptions options;
+            options.record_source_ids = true;
+            options.version = static_cast<OscarVersion>(version);
+            std::cout << "Converting with version " << version << "...\n";
+            const auto start = std::chrono::steady_clock::now();
+            if (!OscarConverter().Convert(inputFilename, outputs[version].string(), options))
+                return ValidationResult::Error;
+            const double seconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            timings << version << ',' << seconds << '\n';
+        }
+        timings.close();
+        if (!timings)
+            throw std::runtime_error("cannot write conversion timings");
+
+        auto result = ValidationResult::Equal;
+        for (const auto& [current, reference] : pairs) {
+            const auto report = directory / ("diff_" + std::to_string(current) + "_" +
+                                             std::to_string(reference) + ".csv");
+            const auto comparison =
+                CompareMcDstVersions(outputs[current].string(), outputs[reference].string(),
+                                     report.string(), labels[current], labels[reference]);
+            if (comparison == ValidationResult::Error)
+                return comparison;
+            if (comparison == ValidationResult::Different)
+                result = comparison;
+        }
+        return result;
+    } catch (const std::exception& error) {
+        std::cerr << "Three-version validation failed: " << error.what() << '\n';
         return ValidationResult::Error;
     }
 }

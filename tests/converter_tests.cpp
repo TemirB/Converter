@@ -270,6 +270,82 @@ void TestRootInput(const fs::path& path, int count = 2) {
     tree.Write();
 }
 
+void TestInteractionVersion(const fs::path& directory) {
+    const auto source = directory / "interaction-types.oscar";
+    const auto output = directory / "interaction-types.root";
+    ConversionOptions options;
+    options.version = OscarVersion::InteractionTypes;
+    auto convert = [&](const std::string& text, const std::vector<ExpectedParticle>& particles) {
+        Write(source, text);
+        Check(OscarConverter().Convert(source.string(), output.string(), options),
+              "interaction-type conversion failed");
+        CheckRoot(output, {{0, particles}});
+    };
+    // All three initial particles are spectators regardless of their source IDs.
+    convert(ElasticEvent(),
+            {{2212, -999., -999., .2}, {2112, -999., -999., -.2}, {2212, -999., -999.}});
+    // A later elastic scattering updates momentum and position without resetting
+    // inelastic participation. The untouched high-ID initial nucleon stays masked.
+    convert(PionEvent(), {{211, 20., 4., .2}, {2112, 10.}, {2212, -999., -999.}, {2212, 20.}});
+    const auto retained =
+        kHeader + Initial() + "# interaction in 2 out 2 rho 0 weight 1 partial 1 type 3\n" +
+        ParticleLine(10, 2212, 10.) + ParticleLine(1001, 2112, 10.) +
+        ParticleLine(10, 2212, 10., 1., .2) + ParticleLine(1001, 2112, 10., 2., -.2) +
+        "# event 0 out 3\n" + ParticleLine(10, 2212, 200.) + ParticleLine(1001, 2112, 200.) +
+        ParticleLine(2002, 2212, 200.) + End();
+    convert(retained, {{2212, 10., 1., .2}, {2112, 10., 2., -.2}, {2212, -999., -999.}});
+    convert(kHeader + "# event 0 in 1\n" + ParticleLine(10, 2214) +
+                "# interaction in 1 out 2 rho 0 weight 1 partial 1 type 5\n" +
+                ParticleLine(10, 2214, 30.) + ParticleLine(400, 2212, 30., 1.) +
+                ParticleLine(401, 211, 30., 2., .2) + "# event 0 out 2\n" +
+                ParticleLine(400, 2212, 200.) + ParticleLine(401, 211, 200.) + End(),
+            {{2212, 30., 1.}, {211, 30., 2., .2}});
+    const auto failedString =
+        kHeader + Initial() + "# interaction in 2 out 2 rho 0 weight 1 partial 1 type 3\n" +
+        ParticleLine(10, 2212, 10.) + ParticleLine(2002, 2212, 10.) +
+        ParticleLine(400, 2212, 10., 1.) + ParticleLine(401, 2212, 10., 2.) +
+        "# interaction in 2 out 2 rho 0 weight 1 partial 1 type 47\n" +
+        ParticleLine(400, 2212, 20.) + ParticleLine(1001, 2112, 20.) +
+        ParticleLine(500, 2212, 20., 6., .2) + ParticleLine(501, 2112, 20., 7., -.2) +
+        "# event 0 out 3\n" + ParticleLine(500, 2212, 200.) + ParticleLine(501, 2112, 200.) +
+        ParticleLine(401, 2212, 200.) + End();
+    convert(failedString, {{2212, 20., 6., .2}, {2112, -999., -999., -.2}, {2212, 10., 2.}});
+    convert(kHeader + Initial() + "# interaction in 1 out 1 rho 0 weight 0 partial 0 type 6\n" +
+                ParticleLine(1001, 2112, 10.) + ParticleLine(1001, 2112, 10., 2., -.2) +
+                "# event 0 out 3\n" + ParticleLine(10, 2212, 200.) +
+                ParticleLine(1001, 2112, 200.) + ParticleLine(2002, 2212, 200.) + End(),
+            {{2212, -999., -999.}, {2112, -999., -999., -.2}, {2212, -999., -999.}});
+    Write(source, Multiplicity394Event());
+    Check(OscarConverter().Convert(source.string(), output.string(), options),
+          "interaction version failed to apply the existing 394-particle selection");
+    CheckRoot(output, {});
+    options.keep_empty_events = true;
+    Check(OscarConverter().Convert(source.string(), output.string(), options),
+          "interaction version --keep-empty failed");
+    CheckRoot(output, {{0, std::vector<ExpectedParticle>(394, {2212, -999., -999.})}});
+    options.keep_empty_events = false;
+
+    Write(source, retained + Replace(EmptyEvent(), "# event 0 ", "# event 9 "));
+    Check(OscarConverter().Convert(source.string(), output.string(), options),
+          "multiple interaction-type events failed");
+    const std::vector<ExpectedEvent> expected = {
+        {0, {{2212, 10., 1., .2}, {2112, 10., 2., -.2}, {2212, -999., -999.}}},
+        {9, {{2212, -999., -999.}, {2112, -999., -999.}, {2212, -999., -999.}}}};
+    CheckRoot(output, expected);
+    const auto size = fs::file_size(output);
+    for (const auto& malformed :
+         {Replace(ElasticEvent(), "type 1", "type 99"), Replace(ElasticEvent(), "type 1", "type"),
+          Replace(ElasticEvent(), "type 1", "type 1 type 3"),
+          Replace(ElasticEvent(), "in 2 out 2", "in 2 out 3"),
+          Replace(ElasticEvent(), "in 2 out 2", "in 2 out 1")}) {
+        Write(source, malformed);
+        Check(!OscarConverter().Convert(source.string(), output.string(), options),
+              "invalid interaction header/count accepted");
+        Check(fs::file_size(output) == size, "failed interaction conversion replaced output");
+        CheckRoot(output, expected);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -386,6 +462,7 @@ int main() {
         Reject(kHeader + "# event 0 in 1\n" + ParticleLine(4, 0), "PDG");
 
         TempDirectory temp;
+        TestInteractionVersion(temp.path);
         const auto source = temp.path / "input.oscar", output = temp.path / "output.root";
         const std::vector<ExpectedParticle> pion_particles = {
             {211, 20., 4., .2}, {2112, 10.}, {2212, 0.}, {2212, 20.}};

@@ -1,11 +1,15 @@
 #include "OscarConverter.h"
+#include "OscarConverterV1.h"
 #include "Particle.h"
+#include "SmashInteraction.h"
 
 #include "McEvent.h"
 #include "McParticle.h"
 #include "McRun.h"
 #include "TClonesArray.h"
 #include "TFile.h"
+#include "TNamed.h"
+#include "TParameter.h"
 #include "TTree.h"
 
 #include <cerrno>
@@ -29,6 +33,20 @@
 
 bool OscarConverter::Convert(const std::string& inputFilename, const std::string& outputFilename,
                              const ConversionOptions& options) {
+    if (options.version == OscarVersion::Legacy) {
+        if (options.keep_empty_events) {
+            std::cerr
+                << "Version 0 uses the original event selection; --keep-empty is unsupported\n";
+            return false;
+        }
+        return OscarConverterV1().Convert(inputFilename, outputFilename, options.record_source_ids);
+    }
+    if (options.version != OscarVersion::Optimized &&
+        options.version != OscarVersion::InteractionTypes) {
+        std::cerr << "Unsupported converter version\n";
+        return false;
+    }
+    const bool use_interactions = options.version == OscarVersion::InteractionTypes;
     constexpr int kInitialParticles = 394;
     constexpr int kMaxParticles = std::numeric_limits<unsigned short>::max();
     constexpr std::string_view kWhitespace = " \t\r\n\f\v";
@@ -36,6 +54,7 @@ bool OscarConverter::Convert(const std::string& inputFilename, const std::string
     struct BufferedParticle {
         Particle particle;
         bool written = false;
+        bool spectator = false;
     };
 
     std::string temporaryFilename;
@@ -90,6 +109,9 @@ bool OscarConverter::Convert(const std::string& inputFilename, const std::string
         buffer.reserve(kInitialParticles);
         Mode mode = Mode::Idle;
         int eventNumber = -1, eventEnsemble = 0, remainingParticles = 0;
+        SmashInteraction interaction;
+        int historyRemaining = 0;
+        std::vector<bool> incomingSpectators;
         std::string line, marker, kind, phase, key;
         std::istringstream fields;
         fields.imbue(std::locale::classic());
@@ -107,6 +129,10 @@ bool OscarConverter::Convert(const std::string& inputFilename, const std::string
                     if (remainingParticles == 0)
                         throw std::runtime_error("particle block exceeds its declared count");
                     --remainingParticles;
+                } else if (use_interactions) {
+                    if (historyRemaining == 0)
+                        throw std::runtime_error("interaction exceeds its declared count");
+                    --historyRemaining;
                 }
                 if (mode == Mode::Skip)
                     continue;
@@ -136,7 +162,7 @@ bool OscarConverter::Convert(const std::string& inputFilename, const std::string
                     if (found == buffer.end() || found->second.written)
                         continue;
                     Particle& p = found->second.particle;
-                    if (id < kInitialParticles)
+                    if (use_interactions ? found->second.spectator : id < kInitialParticles)
                         p.t = p.x = p.y = p.z = -999.;
                     const int idx = particles.GetEntriesFast();
                     new (particles[idx]) McParticle(idx, p.pdg, 0, 0, 0, -1, 0, child, p.px, p.py,
@@ -157,7 +183,31 @@ bool OscarConverter::Convert(const std::string& inputFilename, const std::string
                     if (!std::isfinite(value))
                         throw std::runtime_error("non-finite particle value");
                 }
-                buffer.insert_or_assign(p.id, BufferedParticle{p, false});
+                if (!use_interactions) {
+                    buffer.insert_or_assign(p.id, BufferedParticle{p, false, false});
+                } else {
+                    const int position =
+                        interaction.incoming + interaction.outgoing - historyRemaining - 1;
+                    const bool incoming = mode == Mode::History && position < interaction.incoming;
+                    const auto previous = buffer.find(p.id);
+                    bool spectator = mode == Mode::Initial ||
+                                     (previous != buffer.end() && previous->second.spectator);
+                    // A failed string scatters elastically but SMASH assigns fresh IDs.
+                    // Propagate each input's classification to its corresponding output.
+                    if (mode == Mode::History && interaction.type == 47) {
+                        if (incoming) {
+                            if (previous == buffer.end())
+                                throw std::runtime_error(
+                                    "failed string input missing from history");
+                            incomingSpectators.push_back(spectator);
+                        } else {
+                            spectator = incomingSpectators.at(position - interaction.incoming);
+                        }
+                    }
+                    if (mode == Mode::History && interaction.inelastic)
+                        spectator = false;
+                    buffer.insert_or_assign(p.id, BufferedParticle{p, false, spectator});
+                }
                 continue;
             }
 
@@ -168,10 +218,17 @@ bool OscarConverter::Convert(const std::string& inputFilename, const std::string
                 continue;
             if (remainingParticles != 0)
                 throw std::runtime_error("particle block ended before its declared count");
+            if (use_interactions && mode == Mode::History && historyRemaining != 0)
+                throw std::runtime_error("interaction ended before its declared count");
             const bool finalSeen = mode == Mode::Final || mode == Mode::Skip;
             if (kind == "interaction") {
                 if (mode == Mode::Idle || finalSeen)
                     throw std::runtime_error("interaction outside an active event");
+                if (use_interactions) {
+                    interaction = ReadSmashInteraction(fields);
+                    historyRemaining = interaction.incoming + interaction.outgoing;
+                    incomingSpectators.clear();
+                }
                 mode = Mode::History;
                 continue;
             }
@@ -237,6 +294,18 @@ bool OscarConverter::Convert(const std::string& inputFilename, const std::string
             entries <= std::numeric_limits<int>::max() ? static_cast<int>(entries) : 0;
         McRun run("SMASH", "Converted from Oscar file", 0, 0, 0., 0, 0, 0., 0., 0., -1, 0., 0., 0.,
                   runCount);
+        if (use_interactions) {
+            TParameter<int> version("ConverterVersion", 2);
+            TNamed definition(
+                "SpectatorDefinition",
+                "Initial-particle lineage without inelastic SMASH processes; "
+                "types 0,1,6,8,47,90 do not establish participation; "
+                "type 47 preserves each input classification across new IDs; "
+                "spectators have t=x=y=z=-999; all momenta and participant positions "
+                "come from the latest history record, including later elastic scattering");
+            if (version.Write() <= 0 || definition.Write() <= 0)
+                throw std::runtime_error("failed to write interaction selection metadata");
+        }
         if (run.Write() <= 0 || outputFile->Write() <= 0 || outputFile->TestBit(TFile::kWriteError))
             throw std::runtime_error("failed to finalize ROOT output");
         tree.reset();

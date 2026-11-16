@@ -15,7 +15,7 @@ CXXFLAGS ?= -O2 -g
 PROJECT_CPPFLAGS = -D__ROOT__ -Iinclude -isystem "$(abspath $(MCDST_INCLUDE_DIR))"
 COMPILE_FLAGS = -std=c++17 $(ROOT_CFLAGS) -Wall -Wextra -Wpedantic -MMD -MP
 LINK_LIBS = $(ROOT_LIBS) -lEG -Wl,-rpath,"$(ROOT_LIBDIR)"
-CORE_NAMES = OscarReader OscarConverter OscarConverterV1 ConverterValidation McDstWriter RootConverter
+CORE_NAMES = OscarReader OscarConverter OscarConverterV1 SmashInteraction ConverterValidation McDstWriter RootConverter
 CORE_OBJECTS = $(addprefix $(BUILD_DIR)/,$(addsuffix .o,$(CORE_NAMES)))
 LAB_NAMES = McDstLab McDstLabIO McDstLabCentrality McDstLabBatch McDstLabMerge
 LAB_OBJECTS = $(addprefix $(BUILD_DIR)/,$(addsuffix .o,$(LAB_NAMES)))
