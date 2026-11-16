@@ -3,6 +3,7 @@
 #include "McParticle.h"
 #include "McRun.h"
 
+#include <TBranch.h>
 #include <TBranchElement.h>
 #include <TClonesArray.h>
 #include <TDatabasePDG.h>
@@ -17,6 +18,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace mcdst_lab::detail {
 namespace {
@@ -89,12 +91,41 @@ TTree& ReadMcDstTree(TFile& file) {
     return *tree;
 }
 
+void CheckBranchEntries(TBranch& branch, Long64_t expected) {
+    if (branch.TestBit(::kDoNotProcess)) {
+        return;
+    }
+    const Long64_t actual = branch.GetEntries();
+    if (actual != expected) {
+        throw std::runtime_error("inconsistent entry count in branch " +
+                                 std::string(branch.GetFullName().Data()) + ": expected " +
+                                 std::to_string(expected) + ", got " + std::to_string(actual));
+    }
+    TIter children(branch.GetListOfBranches());
+    while (auto* child = static_cast<TBranch*>(children())) {
+        CheckBranchEntries(*child, expected);
+    }
+}
+
+std::vector<TBranch*> ActiveInputBranches(TTree& tree) {
+    std::vector<TBranch*> branches;
+    TIter next(tree.GetListOfBranches());
+    while (auto* branch = static_cast<TBranch*>(next())) {
+        if (!branch->TestBit(::kDoNotProcess)) {
+            CheckBranchEntries(*branch, tree.GetEntries());
+            branches.push_back(branch);
+        }
+    }
+    return branches;
+}
+
 struct InputBuffers {
     TClonesArray particles{"McParticle"};
     TClonesArray events{"McEvent"};
     TClonesArray* particle_pointer = &particles;
     TClonesArray* event_pointer = &events;
     ResetTreeAddresses reset;
+    std::vector<TBranch*> branches;
 
     InputBuffers(TTree& tree, bool hist_only) : reset(tree) {
         Require(tree.SetBranchAddress("Particle", &particle_pointer) >= 0 &&
@@ -107,11 +138,20 @@ struct InputBuffers {
             tree.SetBranchStatus("Particle*", true);
             tree.SetBranchStatus("Event*", true);
         }
+        branches = ActiveInputBranches(tree);
         tree.SetCacheSize(8 * 1024 * 1024);
     }
 
     McEvent& ReadEvent(TTree& tree, Long64_t entry) {
-        Require(tree.GetEntry(entry) > 0, "failed to read entry " + std::to_string(entry));
+        const Long64_t local_entry = tree.LoadTree(entry);
+        Require(local_entry >= 0, "failed to load entry " + std::to_string(entry));
+        // A positive TTree::GetEntry total can hide a branch that returned zero bytes.
+        for (auto* branch : branches) {
+            if (branch->GetEntry(local_entry) <= 0) {
+                throw std::runtime_error("failed to read branch " + std::string(branch->GetName()) +
+                                         " at entry " + std::to_string(entry));
+            }
+        }
         Require(particles.GetClass() == McParticle::Class() &&
                     events.GetClass() == McEvent::Class(),
                 "unexpected class in McDst arrays");

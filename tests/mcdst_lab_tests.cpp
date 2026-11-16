@@ -3,6 +3,7 @@
 #include "McParticle.h"
 #include "McRun.h"
 
+#include <TBranch.h>
 #include <TClonesArray.h>
 #include <TFile.h>
 #include <TH1.h>
@@ -115,6 +116,37 @@ void Fixture(const fs::path& filename, int repetitions = 1, int split = 99, bool
     run.Write();
     TNamed metadata("Definitions", "test source metadata");
     metadata.Write();
+}
+
+// The second tree entry is present, but one branch has no second payload.
+void ShortBranchFixture(const fs::path& path, const char* short_branch, int split) {
+    TFile file(path.c_str(), "RECREATE");
+    TClonesArray events("McEvent");
+    TClonesArray particles("McParticle");
+    auto* event_pointer = &events;
+    auto* particle_pointer = &particles;
+    TTree tree("McDst", "Input with an incomplete branch");
+    auto* event_branch = tree.Branch("Event", &event_pointer, 32000, split);
+    auto* particle_branch = tree.Branch("Particle", &particle_pointer, 32000, split);
+    int tag = 0;
+    auto* tag_branch = tree.Branch("UserTag", &tag);
+    auto* event = new (events[0]) McEvent();
+    auto* particle = new (particles[0]) McParticle();
+    particle->setPdg(211);
+    particle->setMomentum(0.5, 0.0, -0.3, 0.6);
+    particle->setPosition(-999.0, -999.0, -999.0, -999.0);
+
+    for (int entry = 0; entry < 2; ++entry) {
+        event->setEventNr(101 + entry);
+        tag = entry;
+        for (auto* branch : {event_branch, particle_branch, tag_branch}) {
+            if (entry == 0 || std::string(branch->GetName()) != short_branch) {
+                Check(branch->Fill() > 0, "cannot write incomplete-branch fixture");
+            }
+        }
+    }
+    tree.SetEntries(2);
+    tree.Write();
 }
 
 void CheckHistograms(TFile& file, int repetitions = 1) {
@@ -453,6 +485,69 @@ template <class Action> void Reject(Action action, const std::string& expected) 
     }
     throw std::runtime_error("expected rejection: " + expected);
 }
+
+void CheckIncompleteBranches(const fs::path& directory, const fs::path& existing_output) {
+    const auto original_output = Bytes(existing_output);
+    for (int split : {0, 99}) {
+        for (const char* branch : {"Event", "Particle"}) {
+            const auto input =
+                directory / (std::string(branch) + "-short-" + std::to_string(split) + ".root");
+            ShortBranchFixture(input, branch, split);
+            const auto original_input = Bytes(input);
+            for (bool hist_only : {false, true}) {
+                mcdst_lab::Options options;
+                options.hist_only = hist_only;
+                Reject(
+                    [&] { mcdst_lab::Process(input.string(), existing_output.string(), options); },
+                    "inconsistent entry count in branch " + std::string(branch));
+                Check(Bytes(existing_output) == original_output,
+                      "incomplete branch replaced an existing output");
+            }
+            Check(Bytes(input) == original_input, "incomplete input was modified");
+        }
+    }
+}
+
+void CheckIncompleteSplitBranch(const fs::path& directory, const fs::path& existing_output) {
+    const auto input = directory / "short-particle-child.root";
+    Fixture(input);
+    std::string branch_name;
+    {
+        TFile file(input.c_str(), "UPDATE");
+        auto* tree = Get<TTree>(file, "McDst");
+        auto* child =
+            static_cast<TBranch*>(tree->GetBranch("Particle")->GetListOfBranches()->At(0));
+        Check(child != nullptr, "missing split branch in fixture");
+        branch_name = child->GetFullName().Data();
+        child->SetEntries(tree->GetEntries() - 1);
+        tree->Write(nullptr, TObject::kOverwrite);
+    }
+    const auto original_output = Bytes(existing_output);
+    for (bool hist_only : {false, true}) {
+        mcdst_lab::Options options;
+        options.hist_only = hist_only;
+        Reject([&] { mcdst_lab::Process(input.string(), existing_output.string(), options); },
+               "inconsistent entry count in branch " + branch_name);
+        Check(Bytes(existing_output) == original_output,
+              "incomplete split branch replaced an existing output");
+    }
+}
+
+void CheckIncompleteExtraBranch(const fs::path& directory, const fs::path& existing_output) {
+    const auto input = directory / "short-extra-branch.root";
+    ShortBranchFixture(input, "UserTag", 0);
+    const auto original_output = Bytes(existing_output);
+    Reject([&] { mcdst_lab::Process(input.string(), existing_output.string()); },
+           "inconsistent entry count in branch UserTag");
+    Check(Bytes(existing_output) == original_output, "incomplete extra branch replaced output");
+
+    // QA intentionally ignores extra branches and can still read both complete McDst entries.
+    mcdst_lab::Options options;
+    options.hist_only = true;
+    const auto qa_path = directory / "short-extra-qa.root";
+    const auto result = mcdst_lab::Process(input.string(), qa_path.string(), options);
+    Check(result.events == 2 && result.particles == 2, "QA rejected an unused extra branch");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -472,6 +567,9 @@ int main(int argc, char** argv) {
         mcdst_lab::Process(input.string(), output.string());
         Check(Bytes(input) == input_bytes, "input modified");
         CheckTransformed(input, output);
+        CheckIncompleteBranches(temp.path, output);
+        CheckIncompleteSplitBranch(temp.path, output);
+        CheckIncompleteExtraBranch(temp.path, output);
         CheckFxtCuts(temp.path);
         CheckSharedFxtCentrality(temp.path);
         CheckTiedFxtCentrality(temp.path);
