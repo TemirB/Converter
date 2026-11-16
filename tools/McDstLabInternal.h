@@ -102,7 +102,7 @@ inline void Require(bool condition, std::string_view message) {
 
 inline void CheckFloat(double value) {
     Require(std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max(),
-            "non-finite value or value outside McDst Float_t range");
+            "non-finite value or value outside mcDst Float_t range");
 }
 
 inline void Write(TObject& object, const char* name = nullptr) {

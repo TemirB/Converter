@@ -34,7 +34,7 @@ std::string OutputFilename(const fs::path& input, bool hist_only) {
             stem.resize(stem.size() - suffix.size());
         }
     }
-    return stem + (hist_only ? ".qa.root" : ".McDst.root");
+    return stem + (hist_only ? ".qa.root" : ".mcDst.root");
 }
 
 std::vector<fs::path> FindInputFiles(const fs::path& directory, std::size_t max_files) {

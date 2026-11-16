@@ -98,7 +98,7 @@ struct InputBuffers {
 
     InputBuffers(TTree& tree, bool hist_only) : reset(tree) {
         Require(tree.SetBranchAddress("Particle", &particle_pointer) >= 0 &&
-                    tree.SetBranchAddress("Event", &event_pointer) >= 0,
+                tree.SetBranchAddress("Event", &event_pointer) >= 0,
                 "cannot bind McDst branches");
         tree.GetBranch("Particle")->SetAutoDelete(kFALSE);
         tree.GetBranch("Event")->SetAutoDelete(kFALSE);

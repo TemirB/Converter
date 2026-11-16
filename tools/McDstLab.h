@@ -42,7 +42,7 @@ struct BatchResult {
 // Throws on failure. The destination is replaced only after a complete write.
 Result Process(const std::string& input, const std::string& output, const Options& options = {});
 
-// Processes *.root in this directory (not recursively), writing *.McDst.root.
+// Processes *.root in this directory (not recursively), writing *.mcDst.root.
 // The QA-only hist_only mode writes *.qa.root without an McDst tree.
 // threads == 0 selects hardware_concurrency; failures do not stop other files.
 // Centrality uses one shared right-tail integral across successfully processed selected files.
